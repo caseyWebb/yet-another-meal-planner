@@ -343,7 +343,7 @@ function MdField(props: { field: "taste" | "diet-principles"; label: string; hin
   );
 }
 
-/** Read-only owned equipment (set through the agent's update_kitchen flow). */
+/** Read-only owned equipment (set through the agent's update_pantry equip/unequip ops). */
 function EquipmentCard({ owned }: { owned: string[] }) {
   return (
     <div className="prof-md-field" data-testid="equipment-card">

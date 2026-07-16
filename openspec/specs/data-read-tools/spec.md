@@ -70,12 +70,17 @@ staleness.
 
 ### Requirement: Unified profile read assembles from D1
 
-`read_user_profile()` SHALL return the caller's full profile assembled from the D1 profile tables — `initialized`, `missing`, and all profile fields — in one batched set of queries. The structured fields (`preferences`, `kitchen`, `overlay`, `ready_to_eat`, `stockup`) are reconstructed from typed rows/columns (preferences from the `profile` row + `brand_prefs`); each `preferences.brands` entry SHALL be assembled as the canonical brand-tier object `{ tiers: string[][], any_brand: boolean }` with **both fields always present** — never a bare array; `staples` is returned as a bare `StaplesItem[]` array (not `{ items: [...] }`) from the D1 `staples` table; the markdown fields (`taste`, `diet_principles`) are returned as strings from the `profile` row. The payload SHALL additionally include the **night-vibe palette** — the caller's saved vibes plus each vibe's derived **cadence status** (`due | overdue | soon | ok`, computed from the vibe's `cadence_days` and its `last_satisfied` query, the `night-vibe-palette` capability) — so the agent reads the member's revealed-preference rhythm at session start as the basis for shaping a plan. The Worker SHALL NOT parse TOML on the profile read path, and SHALL NOT read a KV bundle. The `kitchen` field returns `{ owned: [...], notes: {...} }` from the D1 `kitchen_equipment` table and profile notes.
+`read_user_profile()` SHALL return the caller's full profile assembled from the D1 profile tables — `initialized`, `missing`, and all profile fields — in one batched set of queries. The structured fields (`preferences`, `kitchen`, `overlay`, `stockup`) are reconstructed from typed rows/columns (preferences from the `profile` row + `brand_prefs`); each `preferences.brands` entry SHALL be assembled as the canonical brand-tier object `{ tiers: string[][], any_brand: boolean }` with **both fields always present** — never a bare array; `staples` is returned as a bare `StaplesItem[]` array (not `{ items: [...] }`) from the D1 `staples` table; the markdown fields (`taste`, `diet_principles`) are returned as strings from the `profile` row. The payload SHALL NOT include a `ready_to_eat` field — the ready-to-eat concept is removed from the agent surface, and the retained D1 `ready_to_eat` table is not read on this path. The payload SHALL additionally include the **night-vibe palette** — the caller's saved vibes plus each vibe's derived **cadence status** (`due | overdue | soon | ok`, computed from the vibe's `cadence_days` and its `last_satisfied` query, the `night-vibe-palette` capability) — so the agent reads the member's revealed-preference rhythm at session start as the basis for shaping a plan. The Worker SHALL NOT parse TOML on the profile read path, and SHALL NOT read a KV bundle. The `kitchen` field returns `{ owned: [...], notes: {...} }` from the D1 `kitchen_equipment` table and profile notes.
 
 #### Scenario: Profile read assembles structured JSON from D1
 
 - **WHEN** `read_user_profile()` is called for a set-up member
 - **THEN** it returns `initialized`, `missing`, the structured fields from typed D1 rows, the markdown fields as strings, and the night-vibe palette with each vibe's cadence status — in one batched set of queries, parsing no TOML and reading no KV bundle
+
+#### Scenario: The payload carries no ready_to_eat field
+
+- **WHEN** `read_user_profile()` is called for a member who has historical rows in the D1 `ready_to_eat` table
+- **THEN** the payload contains no `ready_to_eat` key at all — the table is not queried on this path and no empty-array placeholder is emitted
 
 #### Scenario: Brand preferences read as canonical tier objects
 
@@ -130,12 +135,12 @@ The system SHALL expose the group signal for a visible recipe — how many other
 `profile_status()` SHALL return `{ initialized: boolean, missing: string[] }` — this is also the shape included in `read_user_profile()` results:
 
 - `initialized` SHALL be `true` if and only if the caller's `preferences` record is present in D1 (the unconditional first onboarding area), and `false` otherwise.
-- `missing` SHALL list the onboarding-area keys whose D1 data is absent, using the fixed mapping: `store` (preferences row), `taste`, `diet`, `equipment` (kitchen_equipment rows), `pantry` (pantry rows), `ready-to-eat`, `stockup`, `corpus` (overlay rows), and `vibes` (night_vibes rows — an empty palette is an onboarding gap that `suggest_night_vibes` fills).
+- `missing` SHALL list the onboarding-area keys whose D1 data is absent, using the fixed mapping: `store` (preferences row), `taste`, `diet`, `equipment` (kitchen_equipment rows), `pantry` (pantry rows), `stockup`, `corpus` (overlay rows), and `vibes` (night_vibes rows — an empty palette is an onboarding gap that `suggest_night_vibes` fills). There SHALL be no `ready-to-eat` key in the mapping — ready-to-eat is not an onboarding area.
 
 #### Scenario: Brand-new member with no D1 profile
 
 - **WHEN** `profile_status()` is called for a member with no `preferences` record
-- **THEN** `initialized` is `false` and `missing` lists every onboarding area, including `vibes`
+- **THEN** `initialized` is `false` and `missing` lists every onboarding area, including `vibes` and never `ready-to-eat`
 
 #### Scenario: Set-up member with an empty palette lists the vibes gap
 
@@ -146,59 +151,6 @@ The system SHALL expose the group signal for a visible recipe — how many other
 
 - **WHEN** a member has every onboarding area populated, including a non-empty palette
 - **THEN** `initialized` is `true` and `missing` is empty
-
-### Requirement: recipe_site_url resolves the hosted browse URL at runtime
-
-The system SHALL provide a `recipe_site_url` read tool that resolves cookbook URLs at runtime with lens awareness. Called with no arguments it SHALL return `{ url, enabled }` for the hosted cookbook root: `enabled: true` with `<origin>/cookbook` when the request origin is resolvable, and `enabled: false` with `url: null` when it is not. Called with an optional `slug`, it SHALL hand out a public cookbook link ONLY for an anonymously-visible recipe: `{ url: "<origin>/cookbook/<slug>", enabled: true, scope: "public" }` when the slug is inside the anonymous lens; `{ url: "<origin>/recipe/<slug>", enabled: true, scope: "member" }` (the member app's detail page, which requires a session) when the recipe is visible to the caller but not anonymously; and the same structured `not_found` an unknown slug returns when the slug is outside the caller's lens — indistinguishably. The tool never writes.
-
-#### Scenario: Returns the cookbook root URL
-
-- **WHEN** `recipe_site_url` is called with no slug and the request origin is resolvable
-- **THEN** it returns `{ url: "<origin>/cookbook", enabled: true }`
-
-#### Scenario: An anonymously-visible recipe gets the public link
-
-- **WHEN** `recipe_site_url({ slug })` is called for a recipe inside the anonymous lens
-- **THEN** it returns the `<origin>/cookbook/<slug>` URL with `scope: "public"`
-
-#### Scenario: A lens-scoped recipe gets the member link, never a broken public link
-
-- **WHEN** `recipe_site_url({ slug })` is called under SaaS for a recipe visible to the caller's household but not anonymously
-- **THEN** it returns the member app detail URL with `scope: "member"`, and never the `/cookbook/<slug>` URL (which would 404 for an anonymous visitor)
-
-#### Scenario: Reports not-enabled instead of failing
-
-- **WHEN** `recipe_site_url` is called and the request origin is not resolvable
-- **THEN** it returns `{ url: null, enabled: false }`, so the agent can surface the corpus another way rather than presenting a broken link
-
-### Requirement: get_weather_forecast returns a daily forecast with meal_vibes hints
-
-The system SHALL provide a `get_weather_forecast(days?)` read tool that resolves the caller's location and returns a daily weather forecast for planning purposes. Location resolution SHALL follow this order: (1) `preferences.location_zip`; (2) a 5-digit ZIP parsed from `preferences.preferred_location` via the `"Kroger - <zip>"` convention. If neither yields a ZIP, the tool SHALL return `{ error: "no_location" }` rather than throwing, so the agent can ask the user once and store the result. On a successful location resolve, the tool SHALL call Open-Meteo (geocoding + forecast APIs) and return `{ location: string, forecast: Array<{ date, high_f, low_f, precipitation_chance, condition, meal_vibes }> }`. A network failure or non-200 response from Open-Meteo SHALL return `{ error: "forecast_unavailable" }`. The `meal_vibes` array SHALL be derived deterministically in the Worker from thresholds (not delegated to the LLM): `no-grill` and `comfort` when precipitation_chance ≥ 60; `soup` when high_f < 55; `grill-friendly` when high_f ≥ 80 and precipitation_chance < 30; `light` when high_f ≥ 85. The `days` parameter defaults to 7 and is clamped to 1–16. The tool SHALL be read-only and have no side effects.
-
-#### Scenario: Returns forecast with meal_vibes for a normally-onboarded member
-
-- **WHEN** `get_weather_forecast()` is called and `preferences.preferred_location` is `"Kroger - 76104"`
-- **THEN** the tool parses ZIP `76104`, calls Open-Meteo, and returns a 7-day forecast array where each entry carries `meal_vibes` derived from that day's temperature and precipitation data
-
-#### Scenario: location_zip takes precedence over preferred_location parsing
-
-- **WHEN** both `preferences.location_zip = "10001"` and `preferences.preferred_location = "Kroger - 76104"` are set
-- **THEN** the tool uses `10001` for the geocoding lookup, not `76104`
-
-#### Scenario: No location returns a structured error
-
-- **WHEN** `get_weather_forecast()` is called and neither `location_zip` nor a parseable ZIP in `preferred_location` exists
-- **THEN** the tool returns `{ error: "no_location" }`, not a throw
-
-#### Scenario: Open-Meteo failure returns a structured error
-
-- **WHEN** the Open-Meteo API returns a non-200 response or times out
-- **THEN** the tool returns `{ error: "forecast_unavailable" }`, not a throw
-
-#### Scenario: meal_vibes is empty on mild, dry days
-
-- **WHEN** the forecast for a day has high_f = 72 and precipitation_chance = 15
-- **THEN** that day's `meal_vibes` is `[]` — no strong signal, no hints applied
 
 ### Requirement: search_recipes reads the index and filters in-worker
 
@@ -339,4 +291,28 @@ The system SHALL support an optional `query` string facet that is the single tex
 
 - **WHEN** `search_recipes` returns a recipe that has a `description`
 - **THEN** the entry's frontmatter carries that `description`
+
+### Requirement: read_user_profile carries a server-computed attention block
+
+`read_user_profile()` SHALL include an `attention` object computed deterministically in the Worker from existing per-tenant data: `retrospective_due` (boolean — true when the caller's cooking log is non-empty AND `profile.last_retrospective_at` is NULL or older than the due threshold, 42 days), `unverified_perishables` (number — pantry rows in the perishable categories `produce | dairy | seafood | meat` whose `last_verified_at` is NULL or older than the 7-day staleness threshold, the member app's needs-verification rule), and `stale_areas` (string[] — the existing onboarding-area `missing` derivation). The computation SHALL make no AI call and no write; it rides the profile assembly's existing batched reads plus bounded aggregate queries. The `retrospective` tool and the member retrospective endpoints SHALL stamp `profile.last_retrospective_at` (today's date) on each read — the `last_planned_at` watermark precedent — without any other mutation. The member API's profile read (the same assembly) SHALL carry the same block.
+
+#### Scenario: A neglected retrospective surfaces as due
+
+- **WHEN** a member with cooking history has never read a retrospective (watermark NULL) and calls `read_user_profile`
+- **THEN** `attention.retrospective_due` is `true`
+
+#### Scenario: Reading the retrospective resets the nudge
+
+- **WHEN** the member's `retrospective` tool runs and `read_user_profile` is called the next day
+- **THEN** `last_retrospective_at` was stamped and `attention.retrospective_due` is `false`
+
+#### Scenario: Long-unverified perishables are counted, not listed
+
+- **WHEN** three produce/dairy pantry rows have `last_verified_at` older than 7 days
+- **THEN** `attention.unverified_perishables` is `3`, computed with no AI call and no write
+
+#### Scenario: An empty profile degrades cleanly
+
+- **WHEN** a brand-new tenant with no pantry, no cooking log, and no watermark calls `read_user_profile`
+- **THEN** `attention` is `{ retrospective_due: false, unverified_perishables: 0, stale_areas: [...] }` with `stale_areas` equal to the onboarding `missing` areas, and nothing errors
 

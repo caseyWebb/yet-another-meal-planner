@@ -60,49 +60,6 @@ The system SHALL provide `kroger_prices({ ingredients, location_id? })` returnin
 - **WHEN** `kroger_prices` is called with a list of ingredient strings
 - **THEN** it returns one priced result per ingredient including current price, on-sale state, curbside/delivery availability, `inStore` flag, and `aisleLocation`
 
-### Requirement: kroger_flyer synthesized sale scan
-
-The system SHALL provide `kroger_flyer(min_savings_pct?)` that returns a synthesized sale list by reading a **pre-warmed per-location flyer cache**, never by issuing live Kroger searches. The tool SHALL resolve the caller's `preferred_location` to a `locationId`, read the materialized rollup at the store-namespaced KV key `flyer:kroger:{locationId}` (falling back to the legacy `flyer:{locationId}` key while the namespaced key is absent, so a deploy has no cold gap), apply the `min_savings_pct` threshold (a parameter defaulting to 5%) at read time over the cached candidates, and return `{ items, as_of }` — where each item is a fulfillable, genuinely-discounted product deduplicated by `productId` and carrying every broad term that surfaced it (`matched_terms`), and `as_of` is the completion timestamp of the sweep that produced the rollup (or null when no rollup exists). The tool SHALL NOT issue any external Kroger subrequest on this path. The cached rollup SHALL store every product passing the **noise floor** — fulfillable (curbside or delivery) AND on sale (`promo > 0 && promo < regular`, excluding Kroger's `promo == regular` echo) — with raw `regular`/`promo` preserved, so the `min_savings_pct` deal judgment is applied at read and remains caller-tunable. The tool SHALL NOT accept ad-hoc `terms` or an `against_stockup` flag: the former live fan-out and per-tenant/precise scanning are removed from this tool and re-homed to the place-groceries flow. When the rollup is absent (cold cache, or a store not yet swept), the tool SHALL return an empty `items` list rather than erroring. The `{ items, as_of }` contract and the tool's behavior are otherwise unchanged; the store-aware `store_flyer` (satellite-sale-scan) is the general read that serves a non-Kroger store's scanned sales in the same shape. The result is explicitly non-exhaustive and MAY be minutes-to-hours stale; `as_of` conveys its age, and the order path re-prices live at fulfillment.
-
-#### Scenario: Flyer is served from the warmed cache without live fetch
-
-- **WHEN** `kroger_flyer` runs for a caller whose store has a warmed rollup
-- **THEN** it returns that location's cached flyer items plus an `as_of` timestamp, issuing no external Kroger subrequest
-
-#### Scenario: Discount floor applied at read time
-
-- **WHEN** the caller passes a `min_savings_pct` (or omits it, defaulting to 5%)
-- **THEN** only cached products marked down by at least that fraction of the regular price are returned, the deal judgment staying with the caller over the noise-floor rollup
-
-#### Scenario: Cold or missing cache degrades gracefully
-
-- **WHEN** the rollup at `flyer:kroger:{locationId}` (and its legacy `flyer:{locationId}` fallback) is absent (fresh deploy, or a store not yet swept)
-- **THEN** `kroger_flyer` returns an empty `items` list and a null `as_of` rather than erroring
-
-#### Scenario: Ad-hoc terms and stockup scanning are not accepted
-
-- **WHEN** the agent wants to check a salmon substitute or a stockup item against current sales
-- **THEN** it does so through the place-groceries flow, not `kroger_flyer`, which no longer performs any live scan or accepts `terms` / `against_stockup`
-
-#### Scenario: Each product carries all matching broad terms
-
-- **WHEN** a product was surfaced by more than one broad term during the sweep
-- **THEN** it appears once in the rollup with `matched_terms` listing every broad term that surfaced it, rather than collapsing to the first
-
-### Requirement: ready_to_eat_available by curbside/delivery fulfillment
-
-The system SHALL provide `ready_to_eat_available()` that cross-references the **caller's** per-tenant D1 `ready_to_eat` catalog against current Kroger availability, where "available" means the item is fulfillable via curbside or delivery (`fulfillment.curbside || fulfillment.delivery`) at the resolved location. The system SHALL NOT claim live in-store stock, which the public API does not expose. When the caller has no ready-to-eat entries (or an empty catalog), the tool SHALL return an empty availability result rather than erroring.
-
-#### Scenario: Availability partitioned by fulfillment
-
-- **WHEN** `ready_to_eat_available` runs
-- **THEN** the caller's catalog items fulfillable via curbside or delivery are returned as available and the rest as unavailable
-
-#### Scenario: Empty or absent catalog returns empty
-
-- **WHEN** `ready_to_eat_available` runs for a caller whose D1 `ready_to_eat` catalog is absent or empty
-- **THEN** the tool returns an empty availability result without error
-
 ### Requirement: flyer_terms D1 table — curated scan terms
 
 The system SHALL read broad scan terms from the shared D1 `flyer_terms` table. The agent SHALL treat the term list as edit-only-when-directed (the user-curated bucket) and SHALL NOT infer or write terms automatically. These broad terms drive the **background flyer warm** that populates the per-location cache `kroger_flyer` reads, rather than a live per-call scan. The column schema for the `flyer_terms` table SHALL be documented in `docs/SCHEMAS.md`.
@@ -111,4 +68,28 @@ The system SHALL read broad scan terms from the shared D1 `flyer_terms` table. T
 
 - **WHEN** the `flyer_terms` table is empty
 - **THEN** the warm sweep has no broad terms to scan, the per-location rollup is empty, and `kroger_flyer` returns an empty sale list rather than erroring
+
+### Requirement: flyer synthesized sale scan
+
+The system SHALL provide one flyer read tool, `flyer(min_savings_pct?)`, registered only when Kroger is configured (`mcp-tool-gating`), that resolves the caller's **primary fulfillment store** (its slug and location from the profile — `stores.primary` + `stores.preferred_location`), reads that store's background-warmed `flyer:{store}:{locationId}` rollup (Kroger reads fall back to the legacy un-namespaced key while a deploy's first namespaced sweep is pending), applies the `min_savings_pct` deal floor at read (default 5%, over the noise-floor rollup so the deal judgment stays caller-tunable), and returns `{ items, as_of }` — fulfillable, genuinely-discounted products deduplicated by `productId`, each carrying its `matched_terms`, with `as_of` the producing sweep's completion timestamp (or null when no rollup exists). Kroger and satellite-scanned sales SHALL be indistinguishable to the reader except by which store they came from; a **satellite-scanned** store's rollup older than the operator staleness ceiling SHALL read as empty (with `as_of` still surfaced) rather than steering on stale sales. The tool SHALL issue no flyer **fan-out** subrequest (the background sweep already performed it); a satellite store's `preferred_location` label IS its rollup `locationId` (no subrequest), while a Kroger primary may cost one Kroger Locations API resolve. A cold/absent/unresolvable store SHALL return `{ items: [], as_of: null }`, never an error. There is exactly one flyer tool — no separate Kroger-specific and store-generic reads — and it accepts no ad-hoc `terms` / `against_stockup` (specific-purchase checks live in the order flow, which re-prices live).
+
+#### Scenario: The flyer is served from the warmed cache
+
+- **WHEN** `flyer` runs for a caller whose primary store has a warmed rollup
+- **THEN** it returns that store's cached items above the deal floor plus `as_of`, issuing no flyer fan-out subrequest
+
+#### Scenario: A satellite-scanned store reads identically
+
+- **WHEN** `flyer` runs for a caller whose primary store is a non-Kroger store with a warmed scan
+- **THEN** it returns `{ items, as_of }` in the same shape as a Kroger read, and a rollup older than the staleness ceiling reads as empty with `as_of` surfaced
+
+#### Scenario: Cold or missing cache degrades gracefully
+
+- **WHEN** the primary store's rollup is absent (fresh deploy, or a store not yet swept) or the store is unresolvable
+- **THEN** `flyer` returns `{ items: [], as_of: null }` rather than erroring
+
+#### Scenario: One flyer tool on the surface
+
+- **WHEN** a Kroger-configured deployment's member tool list is enumerated
+- **THEN** it carries `flyer` and neither `kroger_flyer` nor `store_flyer`
 

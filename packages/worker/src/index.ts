@@ -9,7 +9,7 @@
 import { OAuthProvider } from "@cloudflare/workers-oauth-provider";
 import { createMcpHandler } from "agents/mcp";
 import type { Env } from "./env.js";
-import { buildServer } from "./tools.js";
+import { buildServer, resolveRegistrationContext } from "./tools.js";
 import { resolveIdentity, directoryFromEnv } from "./tenant.js";
 import { handleOAuth } from "./oauth.js";
 import { handleAuthorize, handleAuthorizeStatus } from "./authorize.js";
@@ -70,7 +70,10 @@ const apiHandler = {
     // The request origin is the Worker's own public host (the operator's domain) — passed
     // to buildServer so `recipe_site_url` can resolve the Worker-hosted cookbook.
     const origin = new URL(request.url).origin;
-    return createMcpHandler(buildServer(env, resolved, origin))(request, env, ctx);
+    // The registration context (mcp-tool-gating): resolved alongside identity, before any
+    // tool registers, so a member connector's tools/list IS the gated member surface.
+    const registrationCtx = await resolveRegistrationContext(env, resolved);
+    return createMcpHandler(buildServer(env, resolved, origin, registrationCtx))(request, env, ctx);
   },
 };
 

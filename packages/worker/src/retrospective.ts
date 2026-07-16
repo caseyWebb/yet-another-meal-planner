@@ -1,14 +1,18 @@
 // Pure retrospective aggregation (cooking-history capability). Produces real
-// protein/cuisine mixes, cadence, the cook-vs-convenience split, ready-to-eat
-// favorites, and underused recipes. No I/O — the tool wrapper supplies the entries,
-// the recipe index, and `now`. Each entry's protein/cuisine is ALREADY RESOLVED by
-// the caller (the D1 `cooking_log LEFT JOIN recipes` + COALESCE — a recipe entry
-// carries its recipe's dims, a non-recipe entry its inline dims), so this layer
-// reads them off the row directly. The recipe `index` drives `underused`: LOVED
-// recipes (the caller's favorites, plus revealed favorites cooked >=3x in the
+// protein/cuisine mixes, cadence, and underused recipes. No I/O — the tool wrapper
+// supplies the entries, the recipe index, and `now`. Each entry's protein/cuisine is
+// ALREADY RESOLVED by the caller (the D1 `cooking_log LEFT JOIN recipes` + COALESCE —
+// a recipe entry carries its recipe's dims, a non-recipe entry its inline dims), so
+// this layer reads them off the row directly. The recipe `index` drives `underused`:
+// LOVED recipes (the caller's favorites, plus revealed favorites cooked >=3x in the
 // trailing 12 months) that have gone STALE (not cooked in a fixed 30 days) and are
 // IN SEASON now. The index must already carry the caller's effective favorite/reject
 // flags + last_cooked (overlay/cooking-log merged in); cook counts come from `entries`.
+//
+// Cadence counts only `type IN ('recipe', 'ad_hoc')` entries (remove-ready-to-eat):
+// a historical row stored with the retired `type = 'ready_to_eat'` still contributes
+// its inline protein/cuisine to the mixes above, but is excluded from cadence exactly
+// as it was before the type's retirement — never a fabricated exclusion, never an error.
 
 import type { CookingLogEntry } from "./cooking-log.js";
 import type { RecipeIndex } from "./recipes.js";
@@ -33,8 +37,6 @@ export interface RetrospectiveResult {
      *  overall figure, reported unknown — never fabricated). */
     meal_unknown: number;
   };
-  cook_vs_convenience: { cooked: number; convenience: number };
-  ready_to_eat_favorites: { name: string; count: number }[];
   underused: {
     slug: string;
     title: unknown;
@@ -146,15 +148,15 @@ export function retrospective(
   const protein_mix: Record<string, number> = {};
   const cuisine_mix: Record<string, number> = {};
   const cookedDates: Map<string, string[]> = new Map();
-  const favorites: Map<string, number> = new Map();
   let cooked = 0;
-  let convenience = 0;
   const by_meal = { breakfast: 0, lunch: 0, dinner: 0, project: 0 };
   let meal_unknown = 0;
 
   for (const e of inWindow) {
     // protein/cuisine are already resolved on the entry (recipe-derived for recipe
-    // entries via the JOIN, inline for non-recipe entries via COALESCE).
+    // entries via the JOIN, inline for non-recipe entries via COALESCE) — bumped for
+    // EVERY entry, including a historical (retired) type, so its dimensions still
+    // feed the mixes exactly as before that type's retirement.
     if (e.type === "recipe" && e.recipe) {
       const dates = cookedDates.get(e.recipe) ?? [];
       dates.push(e.date);
@@ -163,25 +165,20 @@ export function retrospective(
     bump(protein_mix, e.protein ?? "unknown");
     bump(cuisine_mix, e.cuisine ?? "unknown");
 
-    if (e.type === "ready_to_eat") {
-      convenience++;
-      if (e.name) favorites.set(e.name, (favorites.get(e.name) ?? 0) + 1);
-    } else {
+    if (e.type === "recipe" || e.type === "ad_hoc") {
       // recipe + ad_hoc are cooking events. The meal-aware split: rows with a meal
       // count under it; NULL-meal rows land in meal_unknown (still in `cooked`).
       cooked++;
       if (e.meal && e.meal in by_meal) by_meal[e.meal]++;
       else meal_unknown++;
     }
+    // Any other stored type (e.g. a historical `ready_to_eat` row) contributed its
+    // dimensions above and stops here — excluded from cadence, never a cook.
   }
 
   const recipes_cooked = [...cookedDates.entries()]
     .map(([recipe, dates]) => ({ recipe, count: dates.length, dates: dates.sort() }))
     .sort((a, b) => b.count - a.count || a.recipe.localeCompare(b.recipe));
-
-  const ready_to_eat_favorites = [...favorites.entries()]
-    .map(([name, count]) => ({ name, count }))
-    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
 
   // Cadence: cooking events (recipe + ad_hoc) per week over the window.
   const fromMs = Date.parse(`${from}T00:00:00Z`);
@@ -249,8 +246,6 @@ export function retrospective(
     protein_mix,
     cuisine_mix,
     cadence: { cooks: cooked, weeks: Math.round(weeks * 100) / 100, cooks_per_week, by_meal, meal_unknown },
-    cook_vs_convenience: { cooked, convenience },
-    ready_to_eat_favorites,
     underused,
     underused_count: allUnderused.length,
   };

@@ -98,8 +98,8 @@ background crons — is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 | --- | --- |
 | `src/`, `test/`, `wrangler.jsonc` | the Cloudflare Worker — the `yamp` MCP server + OAuth provider |
 | `packages/app`, `packages/admin-app`, `packages/ui` | the member web app (a React SPA served by the Worker at `/`), the operator admin panel (a React SPA served at `/admin`), and the shared shadcn/ui components + theme tokens both build on |
-| `scripts/` | build tooling — recipe indexes, the static cookbook, the plugin bundle |
-| `AGENT_INSTRUCTIONS.md` | the agent persona + conversational flows; the source the plugin bundle is generated from (the bundle is published to the operator's data-repo marketplace, not committed here) |
+| `scripts/` | build tooling — recipe indexes, the static cookbook |
+| `packages/plugin/AGENT_INSTRUCTIONS.md` | the agent persona + conversational flows; the source the plugin bundle is generated from (the bundle is published to the operator's data-repo marketplace, not committed here) |
 | `docs/` | the deep docs (see [Documentation](#documentation)) |
 | `migrations/d1/` | D1 schema migrations, applied by `wrangler d1 migrations apply` |
 | `openspec/` | the change/spec workflow — `changes/archive/` is the history, `specs/` the living contract |
@@ -153,7 +153,7 @@ The complete walkthrough is [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md).
 - [`docs/SCHEMAS.md`](docs/SCHEMAS.md) — recipe-file and D1 formats.
 - [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md) — operator setup, end to end.
 - [`docs/authoring-store-adapters.md`](docs/authoring-store-adapters.md) — writing the per-store satellite adapters (sale-scan + cart-fill) for a store the Worker has no API for.
-- [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md) — the persona and the conversational flows.
+- [`AGENT_INSTRUCTIONS.md`](packages/plugin/AGENT_INSTRUCTIONS.md) — the persona and the conversational flows.
 
 ## What this is — and isn't
 

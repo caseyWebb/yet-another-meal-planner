@@ -17,7 +17,9 @@
 //
 // Cook-type semantics (design.md Decision 4): a recipe's *times cooked* counts only
 // `type='recipe'` rows whose slug is in the corpus; the heatmap and the Cook-events total count
-// `type IN ('recipe','ad_hoc')` (all home cooking, excluding `ready_to_eat`). Favorites are
+// `type IN ('recipe','ad_hoc')` (all home cooking). A historical row stored with the
+// retired `ready_to_eat` type (remove-ready-to-eat — no longer writable) is excluded from
+// both, exactly as before that type's retirement, and never errors this read. Favorites are
 // current state (`overlay` carries no timestamp), so favorite counts do NOT vary by window.
 
 import type { Env } from "./env.js";

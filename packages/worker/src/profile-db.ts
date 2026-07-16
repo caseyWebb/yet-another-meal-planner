@@ -1,10 +1,13 @@
 // D1 profile data layer (d1-profile). The per-tenant grocery profile lives in
 // normalized D1 tables (migrations/d1/0004_profile.sql): a singleton `profile` row
 // of scalars + freeform JSON + the two markdown fields, plus child tables for the
-// list/map fields (brand_prefs, kitchen_equipment, staples, overlay, ready_to_eat,
-// stockup). This module is the SINGLE place those rows are assembled into the
-// agent-facing shapes and mutated — every tool's profile read/write goes through
-// here, over `src/db.ts` (so a D1 failure surfaces as a structured `storage_error`).
+// list/map fields (brand_prefs, kitchen_equipment, staples, overlay, stockup). The
+// D1 `ready_to_eat` table is a retained per-tenant table this module no longer reads
+// or writes (remove-ready-to-eat) — household purge/move hygiene on it lives in
+// src/admin.ts's TENANT_TABLES sweep, not here. This module is the SINGLE place the
+// (still-live) rows above are assembled into the agent-facing shapes and mutated —
+// every tool's profile read/write goes through here, over `src/db.ts` (so a D1
+// failure surfaces as a structured `storage_error`).
 //
 // Reads assemble objects identical to what the agent saw from the old KV bundle;
 // writes mutate rows (UPSERT/DELETE), using `batch` for multi-row atomicity. The
@@ -70,7 +73,6 @@ export interface AssembledProfile {
   diet_principles: string | null;
   kitchen: KitchenInventory;
   staples: StaplesItem[];
-  ready_to_eat: Record<string, unknown>[];
   stockup: Record<string, unknown> | null;
 }
 
@@ -209,35 +211,6 @@ export async function readStaples(env: Env, tenant: string): Promise<StaplesItem
   return rows.map((r) => (r.perishable ? { name: r.name, perishable: true } : { name: r.name }));
 }
 
-/** The caller's ready-to-eat catalog items (the same item shape the agent reads). */
-export async function readReadyToEat(env: Env, tenant: string): Promise<Record<string, unknown>[]> {
-  const rows = await db(env).all<{
-    slug: string;
-    meal: string | null;
-    name: string | null;
-    favorite: number | null;
-    reject: number | null;
-    category: string | null;
-    source: string | null;
-    brand: string | null;
-    notes: string | null;
-  }>(
-    "SELECT slug, meal, name, favorite, reject, category, source, brand, notes FROM ready_to_eat WHERE tenant = ?1",
-    tenant,
-  );
-  return rows.map((r) => ({
-    name: r.name,
-    slug: r.slug,
-    meal: r.meal,
-    favorite: Boolean(r.favorite),
-    reject: Boolean(r.reject),
-    category: r.category ?? null,
-    discovery_source: r.source ?? null,
-    brand: r.brand ?? null,
-    notes: r.notes ?? null,
-  }));
-}
-
 /** Raw stockup items (typed shape) for the update path's dedup logic. */
 export async function readStockupItems(env: Env, tenant: string): Promise<StockupItem[]> {
   const rows = await db(env).all<{
@@ -271,13 +244,36 @@ export async function readFreezerEstimate(env: Env, tenant: string): Promise<str
   return row?.freezer_capacity_estimate ?? null;
 }
 
+/** The caller's retrospective watermark (profile.last_retrospective_at), or null when the
+ *  retrospective has never been read — the attention block's `retrospective_due` input
+ *  (data-read-tools D8), the `last_planned_at` precedent. */
+export async function readLastRetrospective(env: Env, tenant: string): Promise<string | null> {
+  const row = await db(env).first<{ last_retrospective_at: string | null }>(
+    "SELECT last_retrospective_at FROM profile WHERE tenant = ?1",
+    tenant,
+  );
+  return row?.last_retrospective_at ?? null;
+}
+
+/** Stamp the caller's retrospective watermark (called when the retrospective is read) —
+ *  the `last_planned_at` precedent (attention block, data-read-tools D8): resets
+ *  `read_user_profile`'s `attention.retrospective_due` nudge. */
+export async function stampLastRetrospective(env: Env, tenant: string, day: string): Promise<void> {
+  await db(env).run(
+    "INSERT INTO profile (tenant, last_retrospective_at) VALUES (?1, ?2) " +
+      "ON CONFLICT(tenant) DO UPDATE SET last_retrospective_at = excluded.last_retrospective_at",
+    tenant,
+    day,
+  );
+}
+
 /**
  * Assemble the full profile in one batched-ish set of reads (the per-table SELECTs
  * run concurrently). Returns the structured fields plus the markdown fields; the
  * caller adds `initialized`/`missing`. Shape parity with the old KV-bundle assembly.
  */
 export async function readProfile(env: Env, tenant: string): Promise<AssembledProfile> {
-  const [profileRow, brands, owned, staples, ready, stockupItems] = await Promise.all([
+  const [profileRow, brands, owned, staples, stockupItems] = await Promise.all([
     db(env).first<ProfileRow>(PROFILE_SELECT, tenant),
     db(env).all<BrandPrefRow>(
       "SELECT term, tiers, any_brand FROM brand_prefs WHERE tenant = ?1",
@@ -285,7 +281,6 @@ export async function readProfile(env: Env, tenant: string): Promise<AssembledPr
     ),
     readOwnedEquipment(env, tenant),
     readStaples(env, tenant),
-    readReadyToEat(env, tenant),
     readStockupItems(env, tenant),
   ]);
 
@@ -305,7 +300,6 @@ export async function readProfile(env: Env, tenant: string): Promise<AssembledPr
     diet_principles: profileRow?.diet_principles ?? null,
     kitchen: { owned, notes },
     staples,
-    ready_to_eat: ready,
     stockup,
   };
 }
@@ -477,38 +471,5 @@ export async function setKitchen(env: Env, tenant: string, inventory: KitchenInv
   const notesJson = Object.keys(inventory.notes).length ? JSON.stringify(inventory.notes) : null;
   const notesStmt = profileUpsertStmt(env, tenant, { kitchen_notes: notesJson });
   if (notesStmt) stmts.push(notesStmt);
-  await d.batch(stmts);
-}
-
-/** Replace the caller's ready-to-eat rows with the given items (delete-then-insert). */
-export async function setReadyToEat(
-  env: Env,
-  tenant: string,
-  items: Record<string, unknown>[],
-): Promise<void> {
-  const d = db(env);
-  const stmts: D1PreparedStatement[] = [
-    d.prepare("DELETE FROM ready_to_eat WHERE tenant = ?1", tenant),
-  ];
-  const str = (v: unknown): string | null => (typeof v === "string" && v.length > 0 ? v : null);
-  const flag = (v: unknown): number | null => (v ? 1 : null);
-  for (const it of items) {
-    stmts.push(
-      d.prepare(
-        "INSERT INTO ready_to_eat (tenant, slug, meal, name, favorite, reject, category, source, brand, notes) " +
-          "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-        tenant,
-        str(it.slug) ?? "",
-        str(it.meal),
-        str(it.name),
-        flag(it.favorite),
-        flag(it.reject),
-        str(it.category),
-        str(it.discovery_source) ?? str(it.source),
-        str(it.brand),
-        str(it.notes),
-      ),
-    );
-  }
   await d.batch(stmts);
 }

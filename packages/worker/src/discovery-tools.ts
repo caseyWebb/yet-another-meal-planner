@@ -1,15 +1,15 @@
-// Discovery + recipe-creation tools (recipe-discovery capability). UNPROMPTED discovery is
-// autonomous now — the background discovery sweep (src/discovery-sweep.ts) polls the feeds +
-// the email inbox, classifies/taste-matches/imports, and the agent READS the result via
-// list_new_for_me. So the old in-chat pull tools (fetch_rss_discoveries / read_discovery_inbox)
-// are retired from this surface. What remains here:
-//   - parse_recipe — PARSE-ONLY: fetch a page, return its JSON-LD Recipe data (the MANUAL
-//     "import this URL I'm handing you" path — writes nothing).
-//   - create_recipe — write a new recipe (available by default) as one R2 object (manual import).
+// Discovery + recipe-import tools (recipe-discovery / recipe-import capability). UNPROMPTED
+// discovery is autonomous — the background discovery sweep (src/discovery-sweep.ts) polls the
+// feeds + the email inbox, classifies/taste-matches/imports, and the agent READS the result via
+// list_new_for_me. What remains here:
+//   - import_recipe — the MANUAL "bring this recipe in" path: exactly one of a URL (egress-
+//     guarded fetch + JSON-LD extraction) or pasted text (env.AI classification, no fetch),
+//     both converging on the shared create path (buildNewRecipe + validateFile), in one call.
 //   - list_new_for_me — the per-member read of the sweep's fresh imports (the discovery surface).
-//   - read_discovery_errors — the sweep's parked-candidate surface (mirrors read_reconcile_errors).
-//   - reject_discovery — group-wide suppression of a discovery SOURCE so the sweep won't re-import it.
-//   - update_feeds / update_discovery_sources — shared discovery-source config.
+// Source suppression (admin Discovery), the feed/allowlist config (admin Config/Discovery), and
+// the parked-candidate error surface (admin Discovery area) are operator admin surfaces now —
+// there are no reject_discovery / update_feeds / update_discovery_sources / read_discovery_errors
+// MCP tools.
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
@@ -20,27 +20,42 @@ import { ToolError, runTool } from "./errors.js";
 import { recordImportGrant } from "./visibility.js";
 import { validateFile } from "./validate.js";
 import { seedRecipeDescription } from "./recipe-embeddings.js";
-import { seedRecipeFacets } from "./recipe-classify.js";
+import { seedClassifiedFacets } from "./recipe-classify.js";
 import { stampTitleAudit } from "./title-audit.js";
 import { acquireRecipeContent } from "./recipe-acquire.js";
-import { buildNewRecipe, canonicalizeUrl, indexSourceToSlug } from "./discovery.js";
+import { classifyRecipe, CLASSIFY_MAX_RETRIES, DERIVED_FACET_FIELDS, type ClassifyConditioning } from "./discovery-classify.js";
+import { facetsFromFrontmatter } from "./description.js";
+import { buildNewRecipe, canonicalizeUrl, indexSourceToSlug, renderContent, assembleBody } from "./discovery.js";
 import { recipeSourceMap } from "./recipe-index.js";
-import { addFeedRows, addSourceRows, addDiscoveryRejection } from "./corpus-db.js";
-import { readNewForMe, readDiscoveryErrors } from "./discovery-db.js";
+import { readNewForMe } from "./discovery-db.js";
 
 /** Cold-start floor: a never-planned member sees at most this window of recent discoveries.
  *  Exported: the member API's new-for-me endpoint computes the SAME floor. */
 export const NEW_FOR_ME_WINDOW_DAYS = 21;
 
+/** Best-effort heading normalization for a pasted recipe (import_recipe's text path): a
+ *  standalone "Ingredients"/"Instructions" (or "Directions"/"Method"/"Steps"/"Preparation")
+ *  line, optionally colon-suffixed, becomes the canonical H2 marker `buildNewRecipe`
+ *  requires. Anything it can't recognize is left as-is, so a paste with no discernible
+ *  ingredients/instructions split fails `buildNewRecipe`'s own body-shape guard — the
+ *  structured `validation_failed` the recipe-import spec promises for unclassifiable
+ *  text — rather than silently mangling the member's content. */
+function normalizeHeadings(text: string): string {
+  return text
+    .replace(/^[ \t]*ingredients[ \t]*:?[ \t]*$/im, "## Ingredients")
+    .replace(/^[ \t]*(instructions|directions|method|steps|preparation)[ \t]*:?[ \t]*$/im, "## Instructions");
+}
+
 /**
- * Discovery tools (recipe-discovery capability). Discovery is a SHARED, top-level concern:
- * the feeds, the email inbox, and the corpus index live in shared D1 tables, and recipe
- * writes go through the R2 corpus `store` (recipes/<slug>.md). UNPROMPTED discovery is run by
- * the background sweep (not these tools); the agent reads its output via list_new_for_me. The
- * tools here are the MANUAL import path (parse_recipe/create_recipe), the discovery reads
- * (list_new_for_me/read_discovery_errors), source suppression (reject_discovery), and config
- * (update_feeds/update_discovery_sources). Imports dedupe by source URL against the shared
- * corpus so a recipe already present is reused, never duplicated (§6.4).
+ * Discovery tools (recipe-discovery / recipe-import capability). Discovery is a SHARED,
+ * top-level concern: the feeds, the email inbox, and the corpus index live in shared D1
+ * tables, and recipe writes go through the R2 corpus `store` (recipes/<slug>.md). UNPROMPTED
+ * discovery is run by the background sweep (not these tools); the agent reads its output via
+ * list_new_for_me. The only write tool here is import_recipe (recipe-import) — the manual,
+ * member-initiated pipeline (url-fetch-and-parse, or paste-and-classify) fused with the
+ * shared create operation. Imports dedupe by source URL against the shared corpus so a
+ * recipe already present is reused, never duplicated (§6.4, now returned as a SUCCESS —
+ * `{ slug, already_existed: true }` — not an error).
  */
 export function registerDiscoveryTools(
   server: McpServer,
@@ -49,210 +64,185 @@ export function registerDiscoveryTools(
   tenant: Tenant,
 ): void {
   const tenantId = tenant.id;
+
+  /**
+   * The shared create tail (recipe-import D5): strip the DERIVED facets from the
+   * authored file (they live in `recipe_facets`, not R2 — never freeze a one-time
+   * classification as a permanent override), persist via the shared `buildNewRecipe` +
+   * `validateFile` path (slug from the cleaned title, `slug_exists` refusal), record the
+   * caller's attribution, and best-effort seed the title-audit stamp + description +
+   * derived facets (via `seedClassifiedFacets` — the frontmatter is ALREADY classified,
+   * so this does not re-classify, mirroring the discovery sweep's import path).
+   */
+  async function persistImportedRecipe(
+    frontmatter: Record<string, unknown>,
+    body: string,
+  ): Promise<{ slug: string }> {
+    const today = new Date().toISOString().slice(0, 10);
+    const descFacets = facetsFromFrontmatter(frontmatter);
+    const fm: Record<string, unknown> = { ...frontmatter };
+    for (const k of DERIVED_FACET_FIELDS) delete fm[k];
+
+    const { slug, file } = await buildNewRecipe(store, env, fm, body);
+    validateFile(file.path, file.content);
+    await store.put(file.path, file.content);
+
+    await recordImportGrant(env, {
+      recipe: slug,
+      tenant: tenant.id,
+      member: tenant.member,
+      via: "agent",
+      importedAt: today,
+    });
+
+    try {
+      const fmTitle = typeof fm.title === "string" ? fm.title : null;
+      await stampTitleAudit(env, { slug, outcome: "kept", before: fmTitle }, Date.now());
+    } catch (e) {
+      console.error(`[import_recipe] title-audit born-stamp failed for ${slug}:`, e);
+    }
+    try {
+      await seedRecipeDescription(env, slug, descFacets);
+    } catch (e) {
+      console.error(`[import_recipe] description seed failed for ${slug} (reconcile will backfill):`, e);
+    }
+    try {
+      await seedClassifiedFacets(env, slug, frontmatter, body);
+    } catch (e) {
+      console.error(`[import_recipe] facet seed failed for ${slug} (classify pass will backfill):`, e);
+    }
+
+    return { slug };
+  }
+
   server.registerTool(
-    "parse_recipe",
+    "import_recipe",
     {
       description:
-        "Parse a recipe page: fetch it and return its schema.org JSON-LD as structured data ({ title, ingredients[], instructions[], servings, time_total, time_active, source, tools_hint? }). Reads only — writes nothing and commits nothing. Clean up / classify the data, assemble the markdown body (with ## Ingredients and ## Instructions), then call create_recipe to persist it. `tools_hint` (present only when the page lists a schema.org `tool`) is a NON-AUTHORITATIVE hint for classifying `requires_equipment` — it lists every utensil, so default to [] and tag only truly-irreplaceable gear; never copy tools_hint into requires_equipment. If the source URL is already in the shared corpus, the result carries `existing_slug` — reuse that recipe instead of re-creating it (it's shared, you can rate/note it). Structured errors: unreachable (couldn't fetch), no_jsonld (no JSON-LD on page), not_a_recipe (JSON-LD but no Recipe), incomplete (Recipe missing ingredients/instructions). Bot-walled/paywalled sites (e.g. Serious Eats, NYT) return unreachable — paste the recipe instead.",
-      inputSchema: { url: z.string() },
-    },
-    ({ url }) =>
-      runTool(async () => {
-        // Single shared acquisition path (src/recipe-acquire.ts) — the SAME pipeline and the
-        // SAME failure taxonomy the background sweep parks with, so the two can't drift.
-        const result = await acquireRecipeContent(url);
-        if (!result.ok) {
-          switch (result.reason) {
-            case "unreachable":
-              throw new ToolError(
-                "unreachable",
-                result.status !== undefined
-                  ? `Fetching ${url} returned HTTP ${result.status}`
-                  : `Could not fetch ${url}`,
-                result.status !== undefined ? { url, status: result.status } : { url },
-              );
-            case "no_jsonld":
-              throw new ToolError("no_jsonld", `No JSON-LD found at ${url}`, { url });
-            case "not_a_recipe":
-              throw new ToolError("not_a_recipe", `JSON-LD present but no schema.org Recipe at ${url}`, {
-                url,
-              });
-            case "incomplete":
-              throw new ToolError(
-                "incomplete",
-                `Recipe at ${url} is missing ${(result.missing ?? []).join(" and ")}`,
-                { url, missing: result.missing ?? [] },
-              );
-            default:
-              throw new ToolError("unreachable", `Could not acquire ${url}`, { url });
-          }
-        }
-        const norm = result;
-
-        const source = norm.recipe.source ?? canonicalizeUrl(url);
-        // Idempotency (§6.4): if this source is already in the shared corpus, tell
-        // the agent which slug to reuse rather than minting a duplicate.
-        const existingSlug = indexSourceToSlug(await recipeSourceMap(env)).get(
-          canonicalizeUrl(source),
-        );
-        return existingSlug
-          ? { ...norm.recipe, source, existing_slug: existingSlug }
-          : { ...norm.recipe, source };
-      }),
-  );
-
-  server.registerTool(
-    "create_recipe",
-    {
-      description:
-        "Write a NEW recipe to the SHARED corpus, as a single R2 object. Slug derives from the title's dish name — any parenthetical gloss is excluded from the slug basis (\"Jatjuk (Pine Nut Porridge)\" → `jatjuk`; the gloss stays in the title) — unless `slug` is given. An imported recipe lands AVAILABLE to every member by default — there is no `status` to set. The body MUST contain ## Ingredients and ## Instructions. " +
-          "The DESCRIPTIVE facets are DERIVED on the cron from the body — you do NOT need to supply `protein`, `cuisine`, `course`, `season`, `tags`, `ingredients_key`, `perishable_ingredients`, `side_search_terms`, or `meal_preppable`; the classifier fills them and `create_recipe` seeds them at import. You MAY still pass `protein`/`cuisine`/`course`/`season`/`tags` as an OPTIONAL authored OVERRIDE (it wins over the classifier; `tags` is unioned with the classifier's). " +
-          "REQUIRED authored fields (rejected with validation_failed if missing) — the gates + identity: `title` (non-empty); `source` (the URL, or `null` if hand-entered; set discovered_at + discovery_source for discovery imports); `time_total` (minutes or `null`); `dietary` (array, may be `[]` — a hard diet/allergen gate, AUTHOR it, do not rely on the classifier); `requires_equipment` (array, may be `[]` — a hard makeability gate; ONLY truly-irreplaceable gear: pressure-cooker | sous-vide-circulator | blender | ice-cream-maker, a wrong tag silently hides a makeable recipe; off-vocab rejected); `pairs_with` (array of recipe slugs, may be `[]`). " +
-          "Override vocab when you do supply one: `protein` (chicken | beef | pork | lamb | turkey | fish | shellfish | egg | tofu | vegetarian | vegan | mixed — map shrimp→shellfish, salmon/cod/tuna→fish; `null` for no protein focus, never 'none'), `cuisine` (american | brazilian | cajun | caribbean | chinese | cuban | filipino | french | german | greek | indian | italian | japanese | korean | mediterranean | mexican | moroccan | peruvian | southwestern | spanish | thai | vietnamese; `null` if agnostic), `season` (spring | summer | fall | winter; `[]` year-round; off-vocab incl. `autumn`/capitalized is rejected). " +
-          "Refuses to overwrite an existing slug (slug_exists). A `source` URL already in the corpus is DEDUP-TO-GRANT: no second copy is created — the existing recipe is brought into YOUR household's cookbook (a visibility grant, idempotent if you already hold one) and the tool returns already_exists with the existing slug to reuse. A fresh create likewise lands in your household's cookbook at creation (and is visible more widely per the deployment profile and friend lenses). The `description` is generated automatically — any `description` you supply is ignored.",
+        "Bring a recipe into the shared corpus in ONE call — takes EXACTLY ONE of `url` or `text`, plus an optional `title` hint, and returns the landed slug. No frontmatter is supplied by you: the tool classifies and persists it internally. " +
+        "URL path: fetches the page and extracts its schema.org JSON-LD (handles @graph, arrays, HowToStep/HowToSection instructions). Structured errors on failure (nothing written): `unreachable` (fetch failed, or an outbound-guard refusal — bot-walled/paywalled sites like Serious Eats or NYT land here; paste the recipe as `text` instead), `no_jsonld`, `not_a_recipe`, `incomplete`. " +
+        "Text path: classifies the pasted content directly (env.AI, with a corrective retry) into contract-valid frontmatter and body — no page fetch; use it for a recipe pasted from a bot-walled site or dictated by the member. Genuinely unclassifiable text (no discernible ingredients/instructions) returns a structured validation_failed and writes nothing. " +
+        "Both paths populate every required authored field themselves (title, source, time_total, dietary, requires_equipment, pairs_with) and seed the derived facets/description synchronously, so the recipe is immediately findable via search_recipes. " +
+        "A duplicate `source` URL is DEDUP-TO-GRANT: no second copy is written — the recipe is already in the shared corpus, your household's grant is minted (idempotent), and this is a SUCCESS: `{ slug, already_existed: true }` naming the recipe to reuse. A fresh import returns `{ slug }`. Recipe EDITING is not this tool's job — the member web app owns member edits.",
       inputSchema: {
-        frontmatter: z.record(z.string(), z.unknown()),
-        body: z.string(),
-        slug: z.string().optional(),
+        url: z.string().optional(),
+        text: z.string().optional(),
+        title: z.string().optional(),
       },
     },
-    ({ frontmatter, body, slug }) =>
+    ({ url, text, title }) =>
       runTool(async () => {
-        const today = new Date().toISOString().slice(0, 10);
-        // Idempotency (§6.4), now DEDUP-TO-GRANT (shared-corpus D12): a recipe is shared
-        // and single-source. If this `source` already resolves to a corpus recipe, mint
-        // the caller HOUSEHOLD's visibility grant on the existing recipe (idempotent —
-        // INSERT OR IGNORE, first provenance wins) and return `already_exists` with the
-        // slug to reuse: a second import creates a grant, never a second copy.
-        const source = typeof frontmatter.source === "string" ? frontmatter.source : null;
-        if (source) {
-          const existing = indexSourceToSlug(await recipeSourceMap(env)).get(
-            canonicalizeUrl(source),
-          );
-          if (existing) {
+        const hasUrl = typeof url === "string" && url.trim().length > 0;
+        const hasText = typeof text === "string" && text.trim().length > 0;
+        if (hasUrl === hasText) {
+          throw new ToolError("validation_failed", "import_recipe takes exactly one of `url` or `text`");
+        }
+
+        if (hasUrl) {
+          // Dedup-to-grant (recipe-import): resolved once against the raw input URL
+          // BEFORE any fetch — the common case (re-pasting a URL already in the
+          // corpus) never fetches or classifies at all. A duplicate source is a
+          // SUCCESS, not an error — mint the caller household's grant idempotently
+          // and return the existing slug.
+          const sourceMap = indexSourceToSlug(await recipeSourceMap(env));
+          const grantExisting = async (existingSlug: string) => {
             await recordImportGrant(env, {
-              recipe: existing,
+              recipe: existingSlug,
               tenant: tenant.id,
               member: tenant.member,
               via: "agent",
-              importedAt: today,
+              importedAt: new Date().toISOString().slice(0, 10),
             });
-            throw new ToolError(
-              "already_exists",
-              `A recipe for ${source} is already in the corpus — it is now in your household's cookbook (slug: ${existing}); reuse it`,
-              { slug: existing, source },
-            );
+            return { slug: existingSlug, already_existed: true as const };
+          };
+          const preFetchSlug = sourceMap.get(canonicalizeUrl(url as string));
+          if (preFetchSlug) return grantExisting(preFetchSlug);
+
+          // Single shared acquisition path (src/recipe-acquire.ts) — the SAME pipeline and
+          // the SAME failure taxonomy the background sweep parks with, so the two can't drift.
+          const acquired = await acquireRecipeContent(url as string);
+          if (!acquired.ok) {
+            switch (acquired.reason) {
+              case "unreachable":
+                throw new ToolError(
+                  "unreachable",
+                  acquired.status !== undefined
+                    ? `Fetching ${url} returned HTTP ${acquired.status}`
+                    : `Could not fetch ${url}`,
+                  acquired.status !== undefined ? { url, status: acquired.status } : { url },
+                );
+              case "no_jsonld":
+                throw new ToolError("no_jsonld", `No JSON-LD found at ${url}`, { url });
+              case "not_a_recipe":
+                throw new ToolError("not_a_recipe", `JSON-LD present but no schema.org Recipe at ${url}`, { url });
+              case "incomplete":
+                throw new ToolError(
+                  "incomplete",
+                  `Recipe at ${url} is missing ${(acquired.missing ?? []).join(" and ")}`,
+                  { url, missing: acquired.missing ?? [] },
+                );
+              default:
+                throw new ToolError("unreachable", `Could not acquire ${url}`, { url });
+            }
           }
+          const norm = acquired.recipe;
+          const source = norm.source ?? canonicalizeUrl(url as string);
+
+          // The page's OWN declared source (canonical link / schema.org url) can differ
+          // from the raw input (a redirect, a tracker-wrapped link) — re-check against
+          // the SAME already-loaded map before spending a classify call.
+          const postFetchSlug = sourceMap.get(canonicalizeUrl(source));
+          if (postFetchSlug) return grantExisting(postFetchSlug);
+
+          const rawTitle = norm.title.trim() || title?.trim() || "";
+          const content = renderContent({ ingredients: norm.ingredients, instructions: norm.instructions });
+          // tools_hint (schema.org `tool`) informs requires_equipment classification only —
+          // never written directly, never returned (recipe-import's MODIFIED requirement).
+          const conditioning: ClassifyConditioning | undefined = norm.tools_hint?.length
+            ? { tools_hint: norm.tools_hint }
+            : undefined;
+          const classified = await classifyRecipe(
+            env,
+            { title: rawTitle, content },
+            source,
+            CLASSIFY_MAX_RETRIES,
+            conditioning,
+            "request",
+          );
+          const body = assembleBody({ ingredients: norm.ingredients, instructions: norm.instructions });
+          return persistImportedRecipe(classified.frontmatter, body);
         }
-        const { slug: finalSlug, file, facets } = await buildNewRecipe(store, env, frontmatter, body, slug);
-        // Validate the serialized content before persisting (the commit engine used to do
-        // this): a missing/empty required field or an off-vocab value is rejected
-        // (validation_failed) and nothing is written.
-        validateFile(file.path, file.content);
-        await store.put(file.path, file.content);
-        // Import-path attribution at creation (shared-corpus): the caller household's
-        // grant is recorded in the same operation as the R2 put, so an agent import is
-        // never unattached — the recipe is visible through this household's lens the
-        // moment it becomes readable. Deliberately NOT best-effort (unlike the seeds
-        // below): a swallowed failure would leave the recipe for the lens reconcile's
-        // OPERATOR-household fallback, hiding the import from the caller under SaaS.
-        // Surfacing the error is self-recoverable — a retried create_recipe hits the
-        // dedup path, which mints the caller's grant idempotently.
-        await recordImportGrant(env, {
-          recipe: finalSlug,
-          tenant: tenant.id,
-          member: tenant.member,
-          via: "agent",
-          importedAt: today,
-        });
-        // Seed the derived description synchronously so the new recipe reads well before the
-        // reconcile's next tick (the reconcile stays the authority + refreshes on facet change).
-        // Best-effort: a generation failure must NOT fail the already-persisted import.
-        try {
-          await seedRecipeDescription(env, finalSlug, facets);
-        } catch (e) {
-          console.error(`[create_recipe] description seed failed for ${finalSlug} (reconcile will backfill):`, e);
-        }
-        // Seed the derived FACETS synchronously too (recipe-facet-derivation), so a body-only
-        // import is faceted before the classify pass's next tick. Same classifier + gate hash,
-        // so the cron sees a match and does not reclassify. Best-effort, like the description seed.
-        try {
-          await seedRecipeFacets(env, finalSlug, frontmatter, body);
-        } catch (e) {
-          console.error(`[create_recipe] facet seed failed for ${finalSlug} (classify pass will backfill):`, e);
-        }
-        // Born-stamp the title audit (recipe-title-audit): the agent cleans the title
-        // conversationally at import, so the recipe never enters the re-audit backlog.
-        // Best-effort — a failed stamp must not fail the already-persisted import.
-        try {
-          const fmTitle = typeof frontmatter.title === "string" ? frontmatter.title : null;
-          await stampTitleAudit(env, { slug: finalSlug, outcome: "kept", before: fmTitle }, Date.now());
-        } catch (e) {
-          console.error(`[create_recipe] title-audit born-stamp failed for ${finalSlug}:`, e);
-        }
-        return { slug: finalSlug };
+
+        // Text path: classify directly from the pasted content (no page fetch) — the same
+        // posture the sweep uses for an inline-recipe email body. `source` is null (no URL,
+        // so no dedup-to-grant basis). When no `title` hint is given, the word-subset guard's
+        // basis is the pasted text itself (recipes conventionally state the dish name near
+        // the top), so a real extracted title still passes; only a hint-less paste with no
+        // title anywhere in it falls back to an unusable title and fails validation below.
+        const rawTitle = title?.trim() || (text as string);
+        const classified = await classifyRecipe(
+          env,
+          { title: rawTitle, content: text as string },
+          null,
+          CLASSIFY_MAX_RETRIES,
+          undefined,
+          "request",
+        );
+        // The body is the member's own pasted text, content-faithful — never AI-reformatted —
+        // normalized only enough to carry the required H2 structure. Text with no discernible
+        // ingredients/instructions split fails buildNewRecipe's own shape guard (the
+        // structured validation_failed the spec promises for unclassifiable text).
+        const body = normalizeHeadings((text as string).trim());
+        return persistImportedRecipe(classified.frontmatter, body);
       }),
   );
 
-  server.registerTool(
-    "reject_discovery",
-    {
-      description:
-        "SHARED, group-wide suppression of a discovery SOURCE url: stop it (and its tracker-wrapped variants) from ever being imported by the background discovery sweep for the GROUP. The sweep folds these into its intake dedup, so a rejected url is never re-evaluated or re-imported. Use ONLY when a source is not corpus-worthy for the group — junk, broken, not actually a recipe, a duplicate, or a feed/site producing off-base results. This is collective curation; a member who simply dislikes an already-imported recipe uses toggle_reject (per-tenant), NOT this. Idempotent on the canonical URL; an optional `reason` is recorded for provenance. Does not touch the corpus or anyone's recipe overlay.",
-      inputSchema: { url: z.string(), reason: z.string().optional() },
-    },
-    ({ url, reason }) =>
-      runTool(async () => {
-        const canonical = canonicalizeUrl(url);
-        await addDiscoveryRejection(env, {
-          url: canonical,
-          reason: reason ?? null,
-          rejectedBy: tenantId,
-          rejectedAt: new Date().toISOString().slice(0, 10),
-        });
-        return { url: canonical, rejected: true };
-      }),
-  );
-
-  server.registerTool(
-    "update_discovery_sources",
-    {
-      description:
-        "Add trusted sources to the SHARED inbound-newsletter allowlist. `members` = friend-group personal addresses (anything they forward to yamp@ gets indexed) — address only, no label. `senders` = newsletter From addresses (auto-forwarded mail from them gets indexed), with an optional `name` for the NEWSLETTER (e.g. \"Serious Eats\") — never a person's name. Use when a member sets up a forward or wants a newsletter indexed. Dedups by address — existing entries are untouched. Anyone trusted with this MCP is trusted to widen intake.",
-      inputSchema: {
-        members: z.array(z.object({ address: z.string() })).optional(),
-        senders: z.array(z.object({ address: z.string(), name: z.string().optional() })).optional(),
-      },
-    },
-    ({ members, senders }) =>
-      runTool(async () => {
-        const added = await addSourceRows(env, { members, senders });
-        return { added };
-      }),
-  );
-
-  server.registerTool(
-    "update_feeds",
-    {
-      description:
-        "Add RSS/Atom discovery feeds to the SHARED feed set (the feeds the background discovery sweep polls). Add-only, deduped by url — existing feeds untouched. Each feed needs a url; name, weight (default 1), and tags are optional. A feed url MUST be a public http(s) URL — a non-http scheme, embedded credentials, or a private/loopback/link-local host is rejected with validation_failed and nothing is stored. Discovery feeds are a shared, group-wide concern, so anyone trusted with this MCP may widen the set (like update_discovery_sources). Returns { added }.",
-      inputSchema: {
-        feeds: z.array(
-          z.object({
-            url: z.string(),
-            name: z.string().optional(),
-            weight: z.number().optional(),
-            tags: z.array(z.string()).optional(),
-          }),
-        ),
-      },
-    },
-    ({ feeds }) =>
-      runTool(async () => {
-        const added = await addFeedRows(env, feeds);
-        return { added };
-      }),
-  );
+  // Source suppression (reject_discovery), the inbound-newsletter allowlist
+  // (update_discovery_sources), and the feed set (update_feeds) leave the member MCP
+  // surface (recipe-discovery, newsletter-discovery): they are shared, group-wide
+  // config now written from the operator admin Discovery/Config surface over the same
+  // shared write helpers (addDiscoveryRejection / addSourceRows / addFeedRows) —
+  // unchanged and unaffected by this cull.
 
   server.registerTool(
     "list_new_for_me",
@@ -269,13 +259,7 @@ export function registerDiscoveryTools(
       }),
   );
 
-  server.registerTool(
-    "read_discovery_errors",
-    {
-      description:
-        "Read the SHARED discovery-sweep error surface: candidates the background sweep parked or failed, held for an operator/author to look at (mirrors read_reconcile_errors). Each carries { url, title, source, outcome, slug, detail, created_at }. outcome 'error' is a content park (could not reach or classify a candidate into a valid recipe after retries; detail holds the validation/fetch failure); outcome 'failed' is an infrastructure failure (a transient env.AI/D1 error such as a subrequest-limit hit; detail holds the error), which also degrades the discovery-sweep health record until it clears. An empty list means the sweep is importing cleanly. Read-only; does not retry or import.",
-      inputSchema: {},
-    },
-    () => runTool(async () => ({ errors: await readDiscoveryErrors(env) })),
-  );
+  // read_discovery_errors leaves the member MCP surface (discovery-sweep): parked
+  // candidates surface in the operator admin Discovery area's candidate-pipeline view
+  // (per-row retry/delete) instead — the same readDiscoveryErrors read, unchanged.
 }

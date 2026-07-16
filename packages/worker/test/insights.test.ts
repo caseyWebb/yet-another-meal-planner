@@ -55,15 +55,15 @@ describe("mapInsights — cook-type semantics", () => {
       cooks: [
         { date: dayAgo(0), type: "recipe", recipe: "dal" },
         { date: dayAgo(0), type: "ad_hoc", recipe: null }, // home cooking, not a corpus recipe
-        { date: dayAgo(0), type: "ready_to_eat", recipe: null }, // leftovers/takeout — excluded
+        { date: dayAgo(0), type: "ready_to_eat", recipe: null }, // historical row (retired type, remove-ready-to-eat) — excluded, never errors
         { date: dayAgo(1), type: "recipe", recipe: "ghost" }, // slug not in the corpus — ignored by boards
       ],
     }),
     NOW,
   );
 
-  it("counts recipe + ad_hoc toward the Cook-events total, excluding ready_to_eat", () => {
-    expect(p.perWindow.all.totals.cooks).toBe(3); // recipe + ad_hoc + ghost-recipe; not ready_to_eat
+  it("counts recipe + ad_hoc toward the Cook-events total, excluding a historical ready_to_eat row", () => {
+    expect(p.perWindow.all.totals.cooks).toBe(3); // recipe + ad_hoc + ghost-recipe; not the retired ready_to_eat row
   });
 
   it("does not credit ad_hoc or out-of-corpus cooks to any recipe's times-cooked", () => {

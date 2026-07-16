@@ -1,0 +1,17 @@
+{
+  "name": "@yamp/plugin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "The yamp agent persona source (AGENT_INSTRUCTIONS.md) and the generator (scripts/build-plugin.mjs) that builds the installable Claude plugin bundle from it.",
+  "license": "AGPL-3.0-only",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "typecheck": "node --check scripts/build-plugin.mjs && node --check tests/build-plugin.test.mjs",
+    "build:plugin": "node scripts/build-plugin.mjs",
+    "test": "node --test tests/build-plugin.test.mjs",
+    "test:tooling": "node --test tests/build-plugin.test.mjs"
+  }
+}

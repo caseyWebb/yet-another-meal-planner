@@ -54,6 +54,29 @@ function unwrapResult(raw: { content?: unknown; isError?: boolean }): ToolInvoca
   return { isError, result: content ?? null };
 }
 
+/** One entry from a `tools/list` response: the name plus its raw `_meta` (undefined when
+ *  absent). The plane-split assertion surface (mcp-tool-gating): an app-only op carries
+ *  `_meta.ui.visibility: ["app"]`; every other tool is model-visible by omission (the
+ *  ext-apps default is `["model", "app"]`). */
+export interface RegisteredToolInfo {
+  name: string;
+  meta: Record<string, unknown> | undefined;
+}
+
+/**
+ * List every tool `server` has registered, with its `_meta`. This is the FULL registered
+ * set for BOTH planes — `tools/list` never filters by visibility itself (that's a host-side
+ * convention, not a server-side one), so this is exactly what a registration-matrix test
+ * (mcp-tool-gating) needs: assert the name set for the gating requirement, and the `_meta`
+ * for the app-plane visibility requirement.
+ */
+export async function listRegisteredTools(server: McpServer): Promise<RegisteredToolInfo[]> {
+  return withServer(server, async (client) => {
+    const { tools } = await client.listTools();
+    return tools.map((t) => ({ name: t.name, meta: t._meta as Record<string, unknown> | undefined }));
+  });
+}
+
 /**
  * Invoke one tool over a connected client, returning its structured result/error.
  *

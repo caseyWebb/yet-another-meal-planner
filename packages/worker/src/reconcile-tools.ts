@@ -17,8 +17,11 @@ import { readNightVibes, readVibeSatisfactionDates } from "./night-vibe-db.js";
 import { draftProposals, type ProposalDraft } from "./reconcile-signals.js";
 import { readProposals, getProposal, enqueueProposal, setProposalStatus, applyProposal } from "./reconcile-db.js";
 
-/** The caller's tenant is the operator iff it matches the configured OWNER_TENANT_ID. */
-function isOperator(env: Env, tenant: Tenant): boolean {
+/** The caller's tenant is the operator iff it matches the configured OWNER_TENANT_ID.
+ *  Exported for the registration context (mcp-tool-gating): resolved once per request
+ *  to decide whether the operator plane registers, alongside the call-time checks below
+ *  kept as defense in depth. */
+export function isOperator(env: Env, tenant: Tenant): boolean {
   return !!env.OWNER_TENANT_ID && normalizeTenantId(env.OWNER_TENANT_ID) === tenant.id;
 }
 

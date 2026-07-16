@@ -1,16 +1,13 @@
 // The curated tier + import-path attribution (deployment-profiles-and-visibility-lens):
 // curated candidates ride the sweep pipeline with NO taste matching and NO
 // discovery_matches (grants land on the reserved tenant); the sweep's match+grant
-// single write path (recordDiscoveryMatches) mints attribution and visibility together;
-// and create_recipe records the caller household's grant at creation — dedup-to-grant
-// on a duplicate source, a fresh grant beside the R2 put otherwise.
+// single write path (recordDiscoveryMatches) mints attribution and visibility together.
+// The shared create path's dedup-to-grant attribution mechanics (formerly exercised
+// here via create_recipe) are covered by test/import-recipe.test.ts now.
 import { describe, it, expect } from "vitest";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { sqliteEnv, type SqliteEnv } from "./sqlite-d1.js";
-import { fakeR2 } from "./fake-r2.js";
-import { createR2CorpusStore } from "../src/corpus-store.js";
 import { withServer, invokeTool } from "./tool-harness.js";
-import { registerDiscoveryTools } from "../src/discovery-tools.js";
 import { registerWriteTools, applyPreferencesPatch } from "../src/write-tools.js";
 import { readPreferences } from "../src/profile-db.js";
 import { recordDiscoveryMatches } from "../src/discovery-db.js";
@@ -136,94 +133,10 @@ describe("recordDiscoveryMatches (attribution and visibility minted together)", 
   });
 });
 
-// --- create_recipe: attribution at creation ---------------------------------------------
-
-const BODY = "## Ingredients\n\n- salmon\n\n## Instructions\n\n1. Cook.\n";
-const REQUIRED = {
-  title: "Miso Salmon",
-  source: "https://ex.com/miso-salmon",
-  time_total: 25,
-  dietary: [],
-  requires_equipment: [],
-  pairs_with: [],
-};
-
-function discoveryServer(h: SqliteEnv, files: Record<string, string> = {}) {
-  const env = h.env as unknown as { CORPUS: unknown; AI: unknown };
-  const bucket = fakeR2(files).bucket;
-  env.CORPUS = bucket;
-  // The description/facet seeds are best-effort (try/catch in create_recipe): a stub
-  // that throws exercises exactly the "import already persisted" degradation.
-  env.AI = { run: async () => ({ response: "{}" }) };
-  const server = new McpServer({ name: "curated-test", version: "0.0.0" });
-  registerDiscoveryTools(server, createR2CorpusStore(bucket as never), h.env, { id: "casey", member: "casey-kid" });
-  return server;
-}
-
-describe("create_recipe records attribution at creation", () => {
-  it("a fresh create writes the caller household's grant (via agent, the resolved member) beside the R2 put", async () => {
-    const h = sqliteEnv(["casey"]);
-    await withServer(discoveryServer(h), async (client) => {
-      const res = await invokeTool(client, "create_recipe", { frontmatter: REQUIRED, body: BODY });
-      expect(res).toMatchObject({ isError: false, result: { slug: "miso-salmon" } });
-    });
-    expect(h.rows("recipe_imports")).toEqual([
-      {
-        recipe: "miso-salmon",
-        tenant: "casey",
-        member: "casey-kid",
-        via: "agent",
-        imported_at: new Date().toISOString().slice(0, 10),
-      },
-    ]);
-  });
-
-  it("a duplicate source is DEDUP-TO-GRANT: mints the grant, keeps the already_exists code + slug/source data", async () => {
-    const h = sqliteEnv(["casey"]);
-    // The source URL is already in the corpus, imported by ANOTHER household.
-    h.raw.exec("INSERT INTO recipes (slug, title, source_url) VALUES ('miso-salmon', 'Miso Salmon', 'https://ex.com/miso-salmon')");
-    h.raw.exec("INSERT INTO recipe_imports (recipe, tenant, member, via, imported_at) VALUES ('miso-salmon', 'pat', 'pat', 'agent', '2026-01-01')");
-    await withServer(discoveryServer(h), async (client) => {
-      const res = await invokeTool(client, "create_recipe", { frontmatter: REQUIRED, body: BODY });
-      expect(res).toMatchObject({
-        isError: true,
-        result: { error: "already_exists", slug: "miso-salmon", source: "https://ex.com/miso-salmon" },
-      });
-    });
-    // No second copy; the CALLER's household gained its own grant beside pat's.
-    const grants = h.rows<{ tenant: string; member: string }>("recipe_imports");
-    expect(grants).toHaveLength(2);
-    expect(grants.find((g) => g.tenant === "casey")).toMatchObject({ member: "casey-kid", via: "agent" });
-  });
-
-  it("dedup-to-grant is idempotent for the same household (grant row unchanged)", async () => {
-    const h = sqliteEnv(["casey"]);
-    h.raw.exec("INSERT INTO recipes (slug, title, source_url) VALUES ('miso-salmon', 'Miso Salmon', 'https://ex.com/miso-salmon')");
-    h.raw.exec("INSERT INTO recipe_imports (recipe, tenant, member, via, imported_at) VALUES ('miso-salmon', 'casey', 'casey', 'agent', '2026-01-01')");
-    await withServer(discoveryServer(h), async (client) => {
-      const res = await invokeTool(client, "create_recipe", { frontmatter: REQUIRED, body: BODY });
-      expect(res).toMatchObject({ isError: true, result: { error: "already_exists" } });
-    });
-    expect(h.rows("recipe_imports")).toEqual([
-      { recipe: "miso-salmon", tenant: "casey", member: "casey", via: "agent", imported_at: "2026-01-01" },
-    ]);
-  });
-
-  it("slug_exists (name collision, different source) stays a refusal with NO grant minted", async () => {
-    const h = sqliteEnv(["casey"]);
-    await withServer(
-      discoveryServer(h, { "recipes/miso-salmon.md": "---\ntitle: Other\n---\n\n## Ingredients\n\n## Instructions\n" }),
-      async (client) => {
-        const res = await invokeTool(client, "create_recipe", {
-          frontmatter: { ...REQUIRED, source: "https://ex.com/DIFFERENT" },
-          body: BODY,
-        });
-        expect(res).toMatchObject({ isError: true, result: { error: "slug_exists", slug: "miso-salmon" } });
-      },
-    );
-    expect(h.rows("recipe_imports")).toHaveLength(0);
-  });
-});
+// create_recipe left the MCP surface (recipe-discovery, recipe-import): the shared
+// create path's dedup-to-grant / slug_exists / attribution mechanics it exercised are
+// now behind import_recipe — see test/import-recipe.test.ts for that coverage
+// (fresh import, dedup-to-grant with a fresh vs. idempotent grant, slug_exists).
 
 // --- curated_hide: the household preferences write path (D13-amendment) ------------------
 
@@ -276,7 +189,7 @@ describe("curated_hide rides the preferences merge-patch path", () => {
     setSaas(h);
     seedCurated(h); // the recipes projection row exists — the disposition gate passes
     const server = new McpServer({ name: "write-test", version: "0.0.0" });
-    registerWriteTools(server, createR2CorpusStore(fakeR2().bucket), h.env, "casey");
+    registerWriteTools(server, h.env, "casey");
     const out = await withServer(server, (c) => invokeTool(c, "toggle_reject", { slug: "starter", reject: true }));
     expect(out.isError).toBe(false);
     expect(out.result).toMatchObject({ slug: "starter", overlay: { reject: true } });

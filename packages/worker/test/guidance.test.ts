@@ -10,6 +10,11 @@ import {
 import { createR2CorpusStore } from "../src/corpus-store.js";
 import { fakeR2 } from "./fake-r2.js";
 import { ToolError } from "../src/errors.js";
+import { buildServer } from "../src/tools.js";
+import { withServer, invokeTool } from "./tool-harness.js";
+import { sqliteEnv } from "./sqlite-d1.js";
+import type { Tenant } from "../src/tenant.js";
+import type { Env } from "../src/env.js";
 
 /** A corpus store backed by an in-memory R2 fake; `objects` exposes what was written. */
 function makeStore(files: Record<string, string> = {}) {
@@ -223,5 +228,98 @@ describe("saveGuidance", () => {
     expect(err).toBeInstanceOf(ToolError);
     expect(err.code).toBe("validation_failed");
     expect(objects.size).toBe(0);
+  });
+});
+
+// The fused MCP `read_guidance` tool (cooking-techniques capability, narrow-mcp-surface): a
+// thin dispatch over the SAME listGuidance/readGuidance functions already unit-tested above —
+// slugs absent -> list mode (one domain or all domains grouped), slugs present -> content read
+// (domain required). Covers what the op-level tests above cannot: the tool's own branching, and
+// the list_guidance one-window dispatch alias's parity with read_guidance's list mode.
+describe("read_guidance tool — fused list/read dispatch", () => {
+  const CALLER: Tenant = { id: "casey", member: "casey" };
+  const FILES = {
+    "guidance/ingredient_storage/tender-herbs.md":
+      "---\ndescription: cilantro & parsley — stems in water, in the fridge\n---\n\nStems in water.",
+    "guidance/cooking_techniques/browning-meat.md":
+      "---\ndescription: even layer, don't crowd the pan\n---\n\nDon't disturb it.",
+    "guidance/purchasing/olive-oil.md": "---\ndescription: buy what you'll use in 2 months\n---\n\nExtra virgin.",
+  };
+
+  function guidanceServer() {
+    const h = sqliteEnv(["casey"]);
+    const env = { ...h.env, CORPUS: fakeR2(FILES).bucket } as unknown as Env;
+    return buildServer(env, CALLER, "https://yamp.example.com", {
+      profile: "self-hosted",
+      operator: false,
+      kroger: false,
+      instacart: false,
+    });
+  }
+
+  it("with slugs absent and a domain, lists that domain's slugs with descriptions", async () => {
+    const server = guidanceServer();
+    const out = await withServer(server, (c) => invokeTool(c, "read_guidance", { domain: "cooking_techniques" }));
+    expect(out.isError).toBe(false);
+    expect(out.result).toEqual({
+      domain: "cooking_techniques",
+      entries: [{ slug: "browning-meat", description: "even layer, don't crowd the pan" }],
+    });
+  });
+
+  it("with both slugs and domain absent, lists every domain grouped", async () => {
+    const server = guidanceServer();
+    const out = await withServer(server, (c) => invokeTool(c, "read_guidance", {}));
+    expect(out.isError).toBe(false);
+    const domains = (out.result as { domains: Array<{ domain: string }> }).domains;
+    expect(domains.map((d) => d.domain)).toEqual(["ingredient_storage", "cooking_techniques", "purchasing"]);
+  });
+
+  it("with slugs present, returns the content of exactly the named entries", async () => {
+    const server = guidanceServer();
+    const out = await withServer(server, (c) =>
+      invokeTool(c, "read_guidance", { domain: "purchasing", slugs: ["olive-oil"] }),
+    );
+    expect(out.isError).toBe(false);
+    expect(out.result).toMatchObject({
+      domain: "purchasing",
+      entries: [{ slug: "olive-oil", content: expect.stringContaining("Extra virgin") }],
+    });
+  });
+
+  it("slugs present without a domain is a structured validation_failed", async () => {
+    const server = guidanceServer();
+    const out = await withServer(server, (c) => invokeTool(c, "read_guidance", { slugs: ["olive-oil"] }));
+    expect(out.isError).toBe(true);
+    expect(out.result).toMatchObject({ error: "validation_failed" });
+  });
+
+  it("an unknown slug on read is a structured not_found", async () => {
+    const server = guidanceServer();
+    const out = await withServer(server, (c) =>
+      invokeTool(c, "read_guidance", { domain: "cooking_techniques", slugs: ["no-such-technique"] }),
+    );
+    expect(out.isError).toBe(true);
+    expect(out.result).toMatchObject({ error: "not_found" });
+  });
+
+  it("list_guidance(domain?) is a dispatch alias returning the identical listing read_guidance's list mode does", async () => {
+    // Two separate server instances — an McpServer connects to one transport for its
+    // lifetime (withServer closes it on teardown), so a shared instance can't serve two
+    // concurrent connections.
+    const [viaReadGuidance, viaAlias] = await Promise.all([
+      withServer(guidanceServer(), (c) => invokeTool(c, "read_guidance", { domain: "ingredient_storage" })),
+      withServer(guidanceServer(), (c) => invokeTool(c, "list_guidance", { domain: "ingredient_storage" })),
+    ]);
+    expect(viaAlias.isError).toBe(false);
+    expect(viaAlias.result).toEqual(viaReadGuidance.result);
+  });
+
+  it("list_guidance with no domain also lists every domain grouped, identically to read_guidance()", async () => {
+    const [viaReadGuidance, viaAlias] = await Promise.all([
+      withServer(guidanceServer(), (c) => invokeTool(c, "read_guidance", {})),
+      withServer(guidanceServer(), (c) => invokeTool(c, "list_guidance", {})),
+    ]);
+    expect(viaAlias.result).toEqual(viaReadGuidance.result);
   });
 });

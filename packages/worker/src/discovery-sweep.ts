@@ -24,7 +24,7 @@ import { directoryFromEnv } from "./tenant.js";
 import { readFeeds, readDiscoveryInbox, readDiscoveryRejections } from "./corpus-db.js";
 import { readIngestCandidates, deleteIngestCandidate, pruneIngestPushes } from "./ingest-db.js";
 import { recipeSourceMap, loadRecipeEmbeddings } from "./recipe-index.js";
-import { extractRecipeSources, canonicalizeUrl, buildNewRecipe, indexSourceToSlug } from "./discovery.js";
+import { extractRecipeSources, canonicalizeUrl, buildNewRecipe, indexSourceToSlug, renderContent, assembleBody } from "./discovery.js";
 import { loadDeploymentProfile } from "./deployment.js";
 import { loadDeploymentConfig } from "./operator-config.js";
 import { recordImportGrant, CURATED_TENANT, CURATED_VIA } from "./visibility.js";
@@ -774,20 +774,6 @@ export async function buildWithSlugSuffix<T>(build: (slugOverride?: string) => P
     }
   }
   throw lastErr;
-}
-
-function renderContent(c: RecipeContent): string {
-  return (
-    `Ingredients:\n${c.ingredients.map((i) => `- ${i}`).join("\n")}\n\n` +
-    `Instructions:\n${c.instructions.map((s, i) => `${i + 1}. ${s}`).join("\n")}`
-  );
-}
-
-function assembleBody(c: RecipeContent): string {
-  return (
-    `## Ingredients\n\n${c.ingredients.map((i) => `- ${i}`).join("\n")}\n\n` +
-    `## Instructions\n\n${c.instructions.map((s, i) => `${i + 1}. ${s}`).join("\n")}\n`
-  );
 }
 
 /** Conservatively derive a member's HARD dietary restrictions from their preferences. Returns

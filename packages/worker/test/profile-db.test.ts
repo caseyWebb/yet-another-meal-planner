@@ -22,7 +22,6 @@ function fakeD1(tables: Record<string, Record<string, unknown>[]>): {
     kitchen_equipment: [],
     staples: [],
     overlay: [],
-    ready_to_eat: [],
     stockup: [],
     ...tables,
   };
@@ -247,6 +246,8 @@ describe("readProfile assembly", () => {
       kitchen_equipment: [{ tenant: "everett", slug: "blender" }],
       staples: [{ tenant: "everett", name: "Eggs", normalized_name: "eggs", perishable: 1 }],
       stockup: [{ tenant: "everett", name: "Salmon", normalized_name: "salmon", unit: "lb" }],
+      // Historical rows in the retained D1 ready_to_eat table (remove-ready-to-eat):
+      // present in D1, but readProfile no longer selects from this table at all.
       ready_to_eat: [
         { tenant: "everett", slug: "oats", meal: "breakfast", name: "Oats", favorite: 1, reject: null },
       ],
@@ -258,7 +259,8 @@ describe("readProfile assembly", () => {
     expect(profile.kitchen).toEqual({ owned: ["blender"], notes: { ovens: 2 } });
     expect(profile.staples).toEqual([{ name: "Eggs", perishable: true }]);
     expect(profile.stockup).toMatchObject({ freezer_capacity_estimate: "moderate" });
-    expect(profile.ready_to_eat[0]).toMatchObject({ slug: "oats", meal: "breakfast", favorite: true, reject: false });
+    // The payload carries NO ready_to_eat key at all, even though the table has rows.
+    expect(profile).not.toHaveProperty("ready_to_eat");
   });
 
   it("an absent tenant assembles an empty profile (null preferences, empty lists)", async () => {
@@ -268,7 +270,7 @@ describe("readProfile assembly", () => {
     expect(profile.taste).toBeNull();
     expect(profile.kitchen).toEqual({ owned: [], notes: {} });
     expect(profile.staples).toEqual([]);
-    expect(profile.ready_to_eat).toEqual([]);
     expect(profile.stockup).toBeNull();
+    expect(profile).not.toHaveProperty("ready_to_eat");
   });
 });

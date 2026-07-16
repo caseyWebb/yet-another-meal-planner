@@ -280,18 +280,20 @@ describe("MCP tool contract (tier param, deprecated alias, write gate)", () => {
     expect(h.raw.prepare("SELECT COUNT(*) AS n FROM recipe_notes WHERE author = ?").get(C)).toEqual({ n: 0 });
   });
 
-  it("update_recipe_note re-tiers via tier or the alias, stays self-scoped, and returns the resulting tier", async () => {
+  it("update_recipe_note / remove_recipe_note are not registered — editing is a member web app surface now", async () => {
     const h = await fixture("saas");
     const server = notesServer(h, { id: A, member: A });
-    const [retier, alias, notMine] = await withServer(server, async (c) => [
+    const [update, remove] = await withServer(server, async (c) => [
       await invokeTool(c, "update_recipe_note", { slug: "tacos", created_at: "2026-06-02T00:00:00.000Z", tier: "public" }),
-      await invokeTool(c, "update_recipe_note", { slug: "tacos", created_at: "2026-06-01T00:00:00.000Z", private: true }),
-      await invokeTool(c, "update_recipe_note", { slug: "tacos", created_at: "2099-01-01T00:00:00.000Z", body: "nope" }),
+      await invokeTool(c, "remove_recipe_note", { slug: "tacos", created_at: "2026-06-01T00:00:00.000Z" }),
     ]);
-    expect(asBody(retier.result).tier).toBe("public");
-    expect(asBody(alias.result).tier).toBe("private");
-    expect(notMine.isError).toBe(true);
-    expect(asBody(notMine.result).error).toBe("not_found");
+    expect(update.isError).toBe(true);
+    expect(update.result).toMatchObject({ error: "not_found" });
+    expect(remove.isError).toBe(true);
+    expect(remove.result).toMatchObject({ error: "not_found" });
+    // The underlying re-tier/remove operations (updateRecipeNote / removeRecipeNote)
+    // are covered directly elsewhere in this file — they are unchanged; only their
+    // MCP tool registrations are gone.
   });
 
   it("read_recipe_notes returns tier-shaped entries and never another member's private note", async () => {

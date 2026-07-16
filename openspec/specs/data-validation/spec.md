@@ -92,12 +92,17 @@ The reconcile SHALL skip (and record) a recipe whose body does not contain both 
 
 ### Requirement: Cooking-log and meal-plan structural validation
 
-The cooking log and meal plan SHALL be validated at write time by the Worker's `log_cooked` and `update_meal_plan` tools (D1 storage — not `.toml` files). The Worker SHALL enforce: a `cooking_log` entry requires `date` and `type` (∈ `recipe`/`ready_to_eat`/`ad_hoc`); a `type = recipe` entry requires `recipe` resolved against the D1 `recipes` table; a non-`recipe` entry requires `name`; a `meal_plan` row requires `recipe` resolved against `recipes`; a `sides` value when present MUST be an array of strings (free-text, not slug-resolved); and all `date`/`planned_for` values MUST be valid ISO dates. The reconcile SHALL NOT validate these data sources (they are D1, written and validated by their own tools).
+The cooking log and meal plan SHALL be validated at write time by the Worker's `log_cooked` and `update_meal_plan` tools (D1 storage — not `.toml` files). The Worker SHALL enforce: a `cooking_log` entry requires `date` and `type` (∈ `recipe`/`ad_hoc`); a `type = recipe` entry requires `recipe` resolved against the D1 `recipes` table; an `ad_hoc` entry requires `name`; a `meal_plan` row requires `recipe` resolved against `recipes`; a `sides` value when present MUST be an array of strings (free-text, not slug-resolved); and all `date`/`planned_for` values MUST be valid ISO dates. For one deprecation window, an incoming `type: "ready_to_eat"` is accepted and converted to `type: "ad_hoc"` (the `data-write-tools` shim); after the window it is rejected like any unknown type. Historical `cooking_log` rows already stored with `type = 'ready_to_eat'` are valid stored data and SHALL NOT be re-validated, rewritten, or rejected by any read. The reconcile SHALL NOT validate these data sources (they are D1, written and validated by their own tools).
 
 #### Scenario: Unknown cooking-log type is rejected at write
 
 - **WHEN** `log_cooked` is called with `type: "snack"`
 - **THEN** the Worker returns a structured `validation_failed` error and nothing is written
+
+#### Scenario: The retired ready_to_eat type converts during the window only
+
+- **WHEN** `log_cooked` is called with `type: "ready_to_eat"` and a `name`
+- **THEN** during the deprecation window the entry is stored as `type = 'ad_hoc'` with a `warnings` entry, and after the window the call is rejected with `validation_failed` like any unknown type
 
 #### Scenario: Recipe entry with unresolved slug is rejected at write
 
@@ -144,15 +149,6 @@ SHALL be documented in `docs/SCHEMAS.md`.
 
 - **WHEN** a recipe declares `protein: fish` and `cuisine: filipino`, both in their allowed sets
 - **THEN** validation passes for those fields
-
-### Requirement: Ready-to-eat catalog structural validation
-
-The system SHALL validate the per-tenant ready-to-eat catalog's structural shape, requiring each item's `meal` to be one of `breakfast`/`lunch`/`dinner` and `name` to be a non-empty string. It SHALL NOT validate a `status` or `rating` on ready-to-eat items (the disposition model is favorite/reject); a stray `status`/`rating` is tolerated and ignored.
-
-#### Scenario: Ready-to-eat status/rating are not validated
-
-- **WHEN** a ready-to-eat item carries a stale `status` or `rating`
-- **THEN** validation ignores both and checks only `meal` and `name`
 
 ### Requirement: Controlled vocabulary for required equipment
 
@@ -230,3 +226,4 @@ The controlled vocabularies for recipe variety and makeability dimensions — `P
 
 - **WHEN** the write-time and reconcile validators are exercised against the same off-vocabulary recipe value
 - **THEN** both reject it identically — because they resolve the same shared set (or, if a copy exists, the parity test fails CI before they can disagree)
+

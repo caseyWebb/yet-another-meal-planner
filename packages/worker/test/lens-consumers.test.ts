@@ -11,7 +11,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { sqliteEnv, type SqliteEnv } from "./sqlite-d1.js";
 import { fakeR2 } from "./fake-r2.js";
 import { withServer, invokeTool } from "./tool-harness.js";
-import { readRecipeDetail, buildServer } from "../src/tools.js";
+import { readRecipeDetail } from "../src/tools.js";
 import { registerNoteTools } from "../src/notes-tools.js";
 import { handleCookbook } from "../src/cookbook.js";
 import { loadRecipeIndex } from "../src/recipe-index.js";
@@ -265,32 +265,7 @@ describe("readNewForMe — per-MEMBER attribution within the household", () => {
   });
 });
 
-describe("recipe_site_url — the lens-aware link matrix (through the real buildServer)", () => {
-  async function invoke(h: SqliteEnv, args: Record<string, unknown>) {
-    const server = buildServer(h.env, CALLER, "https://yamp.example.com");
-    return withServer(server, (c) => invokeTool(c, "recipe_site_url", args));
-  }
-
-  it("no-arg root; public scope for anonymously-visible; member scope for caller-only; not_found beyond the lens", async () => {
-    const h = sqliteEnv([A, B]);
-    saasFixture(h);
-
-    const root = await invoke(h, {});
-    expect(root.result).toEqual({ url: "https://yamp.example.com/cookbook", enabled: true });
-
-    // Curated → inside the anonymous lens → the public link that never 404s for a visitor.
-    const pub = await invoke(h, { slug: "curated-dish" });
-    expect(pub.result).toEqual({ url: "https://yamp.example.com/cookbook/curated-dish", enabled: true, scope: "public" });
-
-    // Own grant, not anonymous → the member app detail link, never a broken public link.
-    const member = await invoke(h, { slug: "own-dish" });
-    expect(member.result).toEqual({ url: "https://yamp.example.com/recipe/own-dish", enabled: true, scope: "member" });
-
-    // Out-of-lens and nonexistent are the same structured not_found (no slug oracle).
-    const hidden = await invoke(h, { slug: "hidden-dish" });
-    const missing = await invoke(h, { slug: "no-such-dish" });
-    expect(hidden.isError).toBe(true);
-    expect(hidden.result).toEqual({ error: "not_found", message: "Unknown recipe slug: hidden-dish", slug: "hidden-dish" });
-    expect(missing.result).toEqual({ error: "not_found", message: "Unknown recipe slug: no-such-dish", slug: "no-such-dish" });
-  });
-});
+// recipe_site_url left the MCP surface entirely (data-read-tools): no successor tool
+// resolves this lens-aware link matrix — the Worker-served /cookbook site and the
+// member app's /recipe/<slug> pages (unchanged) are the browse/share surfaces now, and
+// the URL-resolution helper was deleted with its registration.

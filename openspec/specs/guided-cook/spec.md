@@ -6,7 +6,7 @@ Define the hands-free guided cook walkthrough owned by the `cook` skill: a conve
 ## Requirements
 ### Requirement: Conversational pre-flight before any card
 
-The `cook` skill SHALL run pre-flight conversationally — never inside the `recipe_display_v0` card. Pre-flight covers: identify the dish(es) (a vibe-less `search_recipes` query to resolve, `read_recipe` for ingredients and `## Instructions`, reading all of a main + its sides); confirm equipment against `read_user_profile().kitchen` (`owned` + `notes`), asking only about genuinely unknown gear and offering to save volunteered equipment via `update_kitchen`; have the user gather every ingredient; **pin the serving count** for the cook; and **check sufficiency against that pinned count**. When something is missing or short, the skill SHALL surface it here and offer a substitution or scale-down, and SHALL restart pre-flight from the top if the user swaps the dish. Pre-flight is deliberately kept out of the card because a static card cannot read the kitchen, offer a substitution, or restart on a swap.
+The `cook` skill SHALL run pre-flight conversationally — never inside the `recipe_display_v0` card. Pre-flight covers: identify the dish(es) (a vibe-less `search_recipes` query to resolve, `read_recipe` for ingredients and `## Instructions`, reading all of a main + its sides); confirm equipment against `read_user_profile().kitchen` (`owned` + `notes`), asking only about genuinely unknown gear and capturing volunteered equipment silently via `update_pantry`'s kitchen operations (per `ambient-preference-learning`); have the user gather every ingredient; **pin the serving count** for the cook; and **check sufficiency against that pinned count**. When something is missing or short, the skill SHALL surface it here and offer a substitution or scale-down, and SHALL restart pre-flight from the top if the user swaps the dish. Pre-flight is deliberately kept out of the card because a static card cannot read the kitchen, offer a substitution, or restart on a swap.
 
 #### Scenario: Sufficiency shortfall is caught conversationally before the card
 
@@ -17,6 +17,11 @@ The `cook` skill SHALL run pre-flight conversationally — never inside the `rec
 
 - **WHEN** the recipe calls for an appliance already present in the kitchen `owned` list or `notes`
 - **THEN** the skill confirms its use without asking whether the user has it, and only asks about gear absent from both `owned` and `notes`
+
+#### Scenario: Volunteered equipment is captured silently
+
+- **WHEN** the user mentions owning an appliance not yet recorded
+- **THEN** the skill saves it via `update_pantry`'s kitchen operations without an offer-and-confirm ceremony
 
 ### Requirement: Guard the widget and degrade to the text walk
 
@@ -61,15 +66,6 @@ In the voice walk the agent SHALL NOT start or claim to run a timer. When a step
 - **WHEN** a voice-walk step is waiting on a timer but another dish's step can be started meanwhile
 - **THEN** the agent paces that interleaved step during the wait rather than going silent until the timer
 
-### Requirement: Hand off to the cooked flow on completion
-
-On completion the skill SHALL hand off to the `cooked` flow to log the cook and update inventory, carrying the dish(es) over so the user need not restate them. This hand-off behavior SHALL be unchanged from the pre-widget cook flow.
-
-#### Scenario: Completion hands the dish to cooked
-
-- **WHEN** the walkthrough (card or text) finishes
-- **THEN** the skill hands off to the cooked flow with the dish(es) carried over, to capture the cook and decrement consumed pantry items
-
 ### Requirement: Emit the display_recipe cook-mode card scaffolding the prep + cook steps
 
 When the host renders MCP Apps, the `cook` skill SHALL scaffold the **prep + cook** half of the
@@ -108,4 +104,23 @@ disambiguated ingredient lines rather than merged.
 - **WHEN** the cook is a main plus one or more sides
 - **THEN** their steps are merged into a single ordered `steps[]` timed so the dishes finish together,
   and a shared ingredient appears as separate disambiguated lines
+
+### Requirement: Cook completion logs the meal in-flow
+
+The `cook` skill SHALL own completed-meal capture — there is no separate `cooked` flow. On completion of a walkthrough (card or text), the skill SHALL log the cook via `log_cooked` with the dish(es) already in hand (the member never restates them), clear the matching meal-plan row (via `log_cooked`'s plan-row clearing, passing `plan_row_id` when a specific row is anchored), and decrement consumed pantry items via `update_pantry` after asking what was used up. The same capture path SHALL serve a **reported** completed meal ("I made the chili last night"): the skill checks the meal plan first for an obvious match, resolves off-plan dishes with a vibe-less `search_recipes`, logs honestly (only what was actually cooked, with an explicit past `date` when stated, and `meal` only when known), and never logs what was merely planned. After logging, the skill MAY make one light reaction offer (a favorite/hide via `set_recipe_disposition`, or a tweak as an `add_recipe_note`) — one offer, never pushed.
+
+#### Scenario: Walkthrough completion logs without restating the dish
+
+- **WHEN** the guided walkthrough finishes
+- **THEN** the skill logs the cook via `log_cooked` with the dish(es) carried over, clears the matching plan row, and asks about used-up pantry items to decrement — without the member restating what was cooked
+
+#### Scenario: A reported past meal uses the same capture
+
+- **WHEN** the member reports "I made the chili last night" with no walkthrough
+- **THEN** the `cook` skill resolves the dish (meal plan first), logs it via `log_cooked` with yesterday's date, and updates the pantry — logging only what was actually cooked
+
+#### Scenario: One light reaction offer after logging
+
+- **WHEN** a cook has just been logged
+- **THEN** the skill makes at most one light offer to capture a reaction or note, and drops it without comment if declined
 

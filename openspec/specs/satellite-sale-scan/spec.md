@@ -90,20 +90,6 @@ The Worker SHALL trust a satellite's `sale` outputs only after validation and SH
 - **WHEN** a `sale` observation is accepted into a rollup
 - **THEN** its `productId` (and product `url` when reported) is retained, so the sale claim can be verified against the store's page — the same provenance a later sensor-audit would sample
 
-### Requirement: store_flyer reads the caller's store flyer, Kroger or satellite-scanned
-
-The system SHALL provide `store_flyer(min_savings_pct?)` that resolves the caller's **primary fulfillment store** (its slug and location from the profile), reads that store's `flyer:{store}:{locationId}` rollup, applies the `min_savings_pct` deal floor at read (default 5%) and a staleness ceiling to a satellite-scanned store's rollup, and returns `{ items, as_of }` — the **same shape** `kroger_flyer` returns, indistinguishable to the reader whether the store is Kroger or satellite-scanned. When the rollup is absent (cold cache, a store not yet scanned) or older than the staleness ceiling, the tool SHALL return an empty `items` list (with `as_of` still surfaced), never an error. The tool SHALL issue no flyer **fan-out** subrequest (the background sweep already performed it); for a satellite store its `preferred_location` label IS the rollup `locationId` (no subrequest), while for a Kroger primary resolving that label to a numeric `locationId` may cost one Kroger Locations API call exactly like `kroger_flyer` — no flyer scan either way. `kroger_flyer` SHALL be retained with its existing `{ items, as_of }` contract for the Kroger path (now reading the Kroger-namespaced key); `store_flyer` supersedes it in the general menu-gen pre-pass so satellite-scanned sales are read the same way Kroger sales are.
-
-#### Scenario: A satellite-scanned store is read like a Kroger store
-
-- **WHEN** `store_flyer` runs for a caller whose primary store is a non-Kroger store with a warmed scan
-- **THEN** it returns `{ items, as_of }` from `flyer:{store}:{locationId}` in the same shape as the Kroger flyer, with the deal floor applied at read
-
-#### Scenario: A stale or cold scanned rollup reads as empty
-
-- **WHEN** a satellite-scanned store's rollup is absent or older than the staleness ceiling
-- **THEN** `store_flyer` returns an empty `items` list (surfacing `as_of`) rather than erroring or steering on stale sales
-
 ### Requirement: The satellite runs sale-scan over the pull channel with an operator-authored adapter
 
 The satellite SHALL declare and run the `sale-scan` capability by consuming the pull channel: claiming operator-scope `sale-scan` tasks with its ingest key (declaring `capabilities: ["sale-scan"]`), running a **sale-scan adapter** for the store behind the operator's captured session, and reporting the resulting `sale` observations (or a terminal failure) over the results route — strictly outbound-only. A `sale-scan` adapter SHALL be a plugin over the shared SDK (the same tiered fetch, captured-session consumption, and logger the recipe adapter uses), emitting only the wire-contract `sale` shape; the satellite SHALL validate every emitted observation against the shared contract before it will report one, so an adapter cannot push a non-contract shape or a derived saving. Consistent with the initiative principle that the core ships the host + contract + SDK while users ship the ToS-hostile drivers, **no built-in named-retailer sale adapter SHALL ship**; a store's scan adapter SHALL be operator-authored and loaded from the mounted adapters directory. The satellite SHALL provide a `test` verb that dry-runs a sale adapter against a store/location and prints the `sale` observations it would report, validating them locally without reporting. Sale-scan SHALL be observe-only — it commits no irreversible action.

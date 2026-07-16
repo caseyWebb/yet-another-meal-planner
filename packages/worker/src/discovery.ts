@@ -28,6 +28,32 @@ export interface Candidate {
   summary: string | null;
 }
 
+/** The parsed recipe content the classifier reads and the body is assembled from —
+ *  the discovery sweep's shape, also fed by `import_recipe`'s URL path. */
+export interface RecipeContentInput {
+  ingredients: string[];
+  instructions: string[];
+}
+
+/** Render ingredients+instructions as classifier INPUT text (the discovery sweep's
+ *  `classify` shape, reused by `import_recipe`'s URL path). */
+export function renderContent(c: RecipeContentInput): string {
+  return (
+    `Ingredients:\n${c.ingredients.map((i) => `- ${i}`).join("\n")}\n\n` +
+    `Instructions:\n${c.instructions.map((s, i) => `${i + 1}. ${s}`).join("\n")}`
+  );
+}
+
+/** Assemble a recipe BODY (the `## Ingredients` / `## Instructions` contract
+ *  `buildNewRecipe` requires) from raw ingredients+instructions — the discovery sweep's
+ *  shape, also used by `import_recipe`'s URL path. */
+export function assembleBody(c: RecipeContentInput): string {
+  return (
+    `## Ingredients\n\n${c.ingredients.map((i) => `- ${i}`).join("\n")}\n\n` +
+    `## Instructions\n\n${c.instructions.map((s, i) => `${i + 1}. ${s}`).join("\n")}\n`
+  );
+}
+
 export interface FeedEntry {
   item: FeedItem;
   feedName: string;

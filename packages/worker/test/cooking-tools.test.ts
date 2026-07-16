@@ -162,7 +162,9 @@ describe("retrospective MCP Spend and Waste adapters", () => {
       expect(retrospectiveTool.description).toMatch(/period.*recipes_cooked.*protein_mix.*cuisine_mix/is);
       expect(retrospectiveTool.description).toMatch(/missing dimensions.*unknown/is);
       expect(retrospectiveTool.description).toMatch(/meal-aware.*cadence.*cooks_per_week.*by_meal.*meal_unknown.*NULL-meal.*never assigned a fabricated meal/is);
-      expect(retrospectiveTool.description).toMatch(/cook_vs_convenience.*frequency-ranked.*ready_to_eat_favorites/is);
+      expect(retrospectiveTool.description).toMatch(/ready_to_eat.*retirement/is);
+      expect(retrospectiveTool.description).not.toMatch(/cook_vs_convenience/is);
+      expect(retrospectiveTool.description).not.toMatch(/ready_to_eat_favorites/is);
       expect(retrospectiveTool.description).toMatch(/underused.*independent of period.*favorites plus revealed favorites.*3 times.*12 months.*fixed 30 days.*in season.*rejected recipes are excluded/is);
       expect(retrospectiveTool.description).toMatch(/why.*favorite.*revealed.*all-time.*cook_count.*stalest-first.*capped at 15.*underused_count.*pre-cap/is);
       expect(retrospectiveTool.description).toMatch(/spend_range.*4w.*8w.*12w/is);

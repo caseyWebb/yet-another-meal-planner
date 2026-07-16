@@ -5,8 +5,9 @@ import {
 	RESOURCE_MIME_TYPE,
 } from "@modelcontextprotocol/ext-apps/server";
 import { z } from "zod";
+import { ShopCommitRequestSchema } from "@yamp/contract";
 import type { Env } from "./env.js";
-import { ToolError, fail } from "./errors.js";
+import { ToolError, fail, runTool } from "./errors.js";
 import {
 	addGroceryRow,
 	isoDay,
@@ -32,6 +33,7 @@ import {
 	undoGrocerySubstitution,
 	verifyGroceryPantry,
 } from "./grocery-operations.js";
+import { commitCheckedShop } from "./shop-commit.js";
 
 export const GROCERY_WIDGET_URI = "ui://grocery/list";
 export const GROCERY_WIDGET_MARKER = "grocery-list-widget";
@@ -261,5 +263,21 @@ export function registerGroceryWidget(
 		},
 		async (input) =>
 			resultOf(env, tenant, () => markGrocerySendPlaced(env, tenant, input)),
+	);
+
+	// commit_shop (mcp-tool-gating D2): app-plane, alongside its grocery-widget siblings —
+	// it never advertises to the model, only the widget calls it, through the app bridge.
+	// Behavior/handler unchanged from its prior plain model-visible registration.
+	registerAppTool(
+		server,
+		"commit_shop",
+		{
+			title: "Commit shop",
+			description:
+				"Complete an in-store or manual shop through the receipt-backed shared operation. Before calling, mark every confirmed pick with set_grocery_checked, sweep unmatched lines, then read the fresh checked snapshot. Supply one client-minted ULID for the trip, the exact sorted eligible checked keys, snapshot_version, and original occurred_at. A replay of the identical request returns the immutable receipt; changed payload or checked-set races return structured outcomes and never partially receive, restock, spend, or delete.",
+			inputSchema: ShopCommitRequestSchema.shape,
+			_meta: { ui: { visibility: ["app"] } },
+		},
+		(input) => runTool(() => commitCheckedShop(env, tenant, input)),
 	);
 }

@@ -24,7 +24,7 @@ import {
   readIngredientCategoryMemo,
 } from "./corpus-db.js";
 import { validateCanonicalId } from "./ingredient-normalize.js";
-import { stampDepartment, PANTRY_CATEGORIES, LEGACY_CATEGORY_TO_LOCATION } from "./department.js";
+import { stampDepartment, PANTRY_CATEGORIES, LEGACY_CATEGORY_TO_LOCATION, type PantryCategory } from "./department.js";
 import { recordPurchaseAssertion, voidSpendEvents, deleteSendStatements } from "./spend.js";
 import {
   applyPantryOperations,
@@ -142,6 +142,32 @@ export async function readPantry(env: Env, tenant: string, filter: PantryFilter 
   }
   const rows = await db(env).all<PantryRow>(sql, ...binds);
   return rows.map(pantryItemOf);
+}
+
+/** Perishable pantry categories + staleness threshold for the attention block's needs-
+ *  verification count (data-read-tools D8) — the member app pantry page's rule (page 06),
+ *  mirrored here as a compiled constant since the two runtimes share no code. */
+const PERISHABLE_PANTRY_CATEGORIES: readonly PantryCategory[] = ["produce", "dairy", "seafood", "meat"];
+const UNVERIFIED_PERISHABLE_DAYS = 7;
+
+/**
+ * Count of the caller's pantry rows in a perishable category (produce/dairy/seafood/meat)
+ * whose `last_verified_at` is NULL or at/past the 7-day staleness threshold — the attention
+ * block's `unverified_perishables` (data-read-tools D8): one bounded COUNT aggregate, no
+ * row materialization.
+ */
+export async function countUnverifiedPerishables(env: Env, tenant: string, asOf: Date = new Date()): Promise<number> {
+  const cutoff = new Date(asOf);
+  cutoff.setUTCDate(cutoff.getUTCDate() - UNVERIFIED_PERISHABLE_DAYS);
+  const cutoffDay = isoDay(cutoff.getTime());
+  const row = await db(env).first<{ n: number }>(
+    "SELECT COUNT(*) AS n FROM pantry WHERE tenant = ?1 AND category IN (?2, ?3, ?4, ?5) " +
+      "AND (last_verified_at IS NULL OR last_verified_at <= ?6)",
+    tenant,
+    ...PERISHABLE_PANTRY_CATEGORIES,
+    cutoffDay,
+  );
+  return row?.n ?? 0;
 }
 
 /** An UPSERT statement for one pantry item (merge rule: keep added_at, overlay rest). Pantry

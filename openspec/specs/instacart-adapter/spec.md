@@ -3,9 +3,7 @@
 ## Purpose
 
 Define the optional operator-configured Instacart Marketplace handoff, including deterministic to-buy mapping, tenant-isolated URL caching, shared transports, structured degradation, and the boundary that keeps handoff separate from order lifecycle and spend.
-
 ## Requirements
-
 ### Requirement: Instacart is an optional operator-authenticated Marketplace adapter
 
 The system SHALL treat Instacart Developer Platform as an optional deployment adapter authenticated by the operator's API key in an HTTP Bearer header. The adapter SHALL be configured only when both the secret key and a valid deployment environment (`development` or `production`) are present; the environment SHALL select the fixed official origin and SHALL NOT accept an arbitrary origin. No member OAuth, callback route, account link, token storage, preferred retailer, or retailer override SHALL exist. When configuration is absent or invalid, the shared operation SHALL return `{ status: "unavailable", code: "not_configured" }` before any D1 write or external request, and member-facing capability reads SHALL expose only availability, never the key.
@@ -80,12 +78,17 @@ The system SHALL persist generated handoff URLs in a D1 table accessed only thro
 
 ### Requirement: One operation serves MCP and member API with structured failures
 
-The MCP tool `create_instacart_handoff` and session-gated `POST /api/grocery/instacart` SHALL call one shared operation and return the same discriminated result contract. The member mutation SHALL be online-only and SHALL NOT enter offline replay. The operation SHALL map validation, 401, 403, 429, network/5xx, and invalid-response failures to stable closed error codes with an honest retryability flag; it SHALL not reflect the API key or unsafe upstream response content in output or logs and SHALL not automatically retry page creation.
+The MCP tool `create_instacart_handoff` and session-gated `POST /api/grocery/instacart` SHALL call one shared operation and return the same discriminated result contract. The MCP tool SHALL register only when the Instacart configuration resolves (`mcp-tool-gating`); the shared operation SHALL retain its structured `unavailable`/`not_configured` result for the member API and for any race where configuration disappears between registration and call. The member mutation SHALL be online-only and SHALL NOT enter offline replay. The operation SHALL map validation, 401, 403, 429, network/5xx, and invalid-response failures to stable closed error codes with an honest retryability flag; it SHALL not reflect the API key or unsafe upstream response content in output or logs and SHALL not automatically retry page creation.
 
 #### Scenario: Tool and endpoint share behavior
 
-- **WHEN** the same tenant and to-buy state invoke the MCP tool and member endpoint
+- **WHEN** the same tenant and to-buy state invoke the MCP tool and member endpoint on a configured deployment
 - **THEN** both use the same mapping/cache/external-call operation and return the same result shape
+
+#### Scenario: An unconfigured deployment advertises no handoff tool
+
+- **WHEN** the deployment has no Instacart API key
+- **THEN** `create_instacart_handoff` is absent from the tool list, while the member endpoint still returns the structured `not_configured` result
 
 #### Scenario: Production permission failure is distinguishable
 
@@ -134,3 +137,4 @@ The repository SHALL document development-key setup and an explicit operator pro
 
 - **WHEN** implementation, tests, fail-closed defaults, and the operator production-enable checklist are complete but Instacart has not approved a production key
 - **THEN** the repository change is complete and archivable while production remains disabled and no approval claim is recorded
+

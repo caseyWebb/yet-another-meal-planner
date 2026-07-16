@@ -86,16 +86,16 @@ describe("log_cooked (D1, transactional meal-plan clear)", () => {
     expect(d1.batches).toHaveLength(0);
   });
 
-  it("inserts a ready_to_eat entry (no meal-plan delete in the batch)", async () => {
+  it("inserts an ad_hoc entry (no meal-plan delete in the batch)", async () => {
     const d1 = fakeD1({ recipes: [] });
     const handlers = collect(d1.env, "everett");
     const out = parse(
-      await handlers.get("log_cooked")!({ type: "ready_to_eat", name: "frozen lasagna", protein: "beef", date: "2026-06-21" }),
+      await handlers.get("log_cooked")!({ type: "ad_hoc", name: "fridge pasta", protein: "beef", date: "2026-06-21" }),
     );
-    expect(out.logged).toMatchObject({ type: "ready_to_eat", name: "frozen lasagna" });
+    expect(out.logged).toMatchObject({ type: "ad_hoc", name: "fridge pasta" });
     const batch = d1.batches[0];
     expect(batch).toHaveLength(1);
-    expect(batch[0].binds).toEqual(["everett", "2026-06-21", "ready_to_eat", null, "frozen lasagna", "beef", null, null, null]);
+    expect(batch[0].binds).toEqual(["everett", "2026-06-21", "ad_hoc", null, "fridge pasta", "beef", null, null, null]);
   });
 
   it("rejects a non-recipe entry with no name (validation_failed)", async () => {
@@ -112,6 +112,81 @@ describe("log_cooked (D1, transactional meal-plan clear)", () => {
     const out = parse(await handlers.get("log_cooked")!({ type: "recipe", recipe: "tacos", date: "June 21" }));
     expect(out.error).toBe("validation_failed");
     expect(d1.batches).toHaveLength(0);
+  });
+
+  it("rejects an unknown type (validation_failed) — only ready_to_eat gets the accept-and-convert shim", async () => {
+    const d1 = fakeD1({ recipes: [] });
+    const handlers = collect(d1.env, "everett");
+    const out = parse(await handlers.get("log_cooked")!({ type: "snack", name: "mystery" }));
+    expect(out.error).toBe("validation_failed");
+    expect(d1.batches).toHaveLength(0);
+  });
+});
+
+// The remove-ready-to-eat one-window shim: a stale plugin's type: "ready_to_eat" write is
+// accepted and CONVERTED to ad_hoc — name/date/meal/inline dims carried over unchanged —
+// with a `warnings` entry on the success return, per the repo's deprecation convention.
+describe("log_cooked — ready_to_eat accept-and-convert shim", () => {
+  it("converts a stale ready_to_eat write to ad_hoc and returns the deprecation warning", async () => {
+    const d1 = fakeD1({ recipes: [] });
+    const handlers = collect(d1.env, "everett");
+    const out = parse(
+      await handlers.get("log_cooked")!({ type: "ready_to_eat", name: "frozen lasagna", protein: "beef", date: "2026-06-21" }),
+    );
+    expect(out.logged).toMatchObject({ type: "ad_hoc", name: "frozen lasagna", protein: "beef" });
+    expect(out.warnings).toEqual([{ key: "type", reason: "retired", superseded_by: "ad_hoc" }]);
+    const batch = d1.batches[0];
+    expect(batch).toHaveLength(1);
+    expect(batch[0].sql).toMatch(/INSERT INTO cooking_log/);
+    expect(batch[0].binds).toEqual(["everett", "2026-06-21", "ad_hoc", null, "frozen lasagna", "beef", null, null, null]);
+  });
+
+  it("carries meal through the conversion and never clears a plan row (ad_hoc behavior)", async () => {
+    const d1 = fakeD1({
+      recipes: [],
+      tables: { meal_plan: [{ tenant: "everett", id: "mp-tacos-0001", recipe: "tacos", meal: "dinner", planned_for: null, sides: null }] },
+    });
+    const handlers = collect(d1.env, "everett");
+    const out = parse(
+      await handlers.get("log_cooked")!({ type: "ready_to_eat", name: "frozen lasagna", meal: "dinner", date: "2026-06-21" }),
+    );
+    expect(out.logged).toMatchObject({ type: "ad_hoc", name: "frozen lasagna", meal: "dinner" });
+    expect(out.cleared_plan_row).toBeUndefined(); // only recipe entries report cleared_plan_row
+    expect(d1.batches[0]).toHaveLength(1); // no meal_plan DELETE — the tacos row survives untouched
+    expect(d1.tables.meal_plan).toHaveLength(1);
+  });
+
+  it("a replayed ready_to_eat write dedupes against the CONVERTED (date, meal, ad_hoc, name) identity", async () => {
+    const d1 = fakeD1({ recipes: [], tables: { cooking_log: [] } });
+    const first = await logCooked(
+      d1.env,
+      "everett",
+      { type: "ready_to_eat", name: "frozen lasagna", date: "2026-06-20" },
+      { dedupe: true },
+    );
+    expect(first.deduped).toBeUndefined();
+    expect(first.logged.type).toBe("ad_hoc");
+    expect(first.warnings).toEqual([{ key: "type", reason: "retired", superseded_by: "ad_hoc" }]);
+
+    // A replay of the SAME stale ready_to_eat call converts to the same identity and dedupes.
+    const replay = await logCooked(
+      d1.env,
+      "everett",
+      { type: "ready_to_eat", name: "frozen lasagna", date: "2026-06-20" },
+      { dedupe: true },
+    );
+    expect(replay.deduped).toBe(true);
+
+    // An ad_hoc write with the identical (date, meal, name) identity dedupes against the
+    // SAME row — the converted form and a direct ad_hoc write converge on one identity.
+    const viaAdHoc = await logCooked(
+      d1.env,
+      "everett",
+      { type: "ad_hoc", name: "frozen lasagna", date: "2026-06-20" },
+      { dedupe: true },
+    );
+    expect(viaAdHoc.deduped).toBe(true);
+    expect(d1.tables.cooking_log).toHaveLength(1);
   });
 });
 

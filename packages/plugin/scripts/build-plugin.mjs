@@ -6,9 +6,9 @@
 // session), not inlined into every workflow. The dominant usage is sequential
 // chains (meal-plan → cook → cooked → feedback), where inlining would re-load the
 // shared content on every link; a referenced library skill loads once. The persona
-// splits into a `core` block (loaded by every workflow) plus depth blocks the heavy
-// flows opt into, so a light flow (e.g. grocery-sale-check) carries nothing extra:
-//   persona-tier markers → yamp-core, yamp-cart, yamp-corpus library skills
+// ships a single `core` block today (loaded by every workflow); depth blocks remain
+// supported for any flow that declares `needs:` against them:
+//   persona-tier markers → yamp-core (plus yamp-<tier> per declared depth tier)
 // Each `### ` flow under `## Common flows` carries a marker:
 //   <!-- skill: <name>
 //   needs: cart, corpus          (optional; omit for core-only flows)

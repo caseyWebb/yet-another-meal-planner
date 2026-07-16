@@ -72,28 +72,38 @@ describe("retrospective aggregates", () => {
     expect(salmon.count).toBe(1); // the Jan entry is excluded
   });
 
-  it("cadence counts recipe+ad_hoc only; convenience is ready_to_eat", () => {
+  it("cadence counts recipe+ad_hoc only; the historical ready_to_eat row is excluded", () => {
     const r = retrospective(entries, index, "30d", NOW);
-    // in-window cooking events: salmon(1) + tacos(2) + ad_hoc(1) = 4
+    // in-window cooking events: salmon(1) + tacos(2) + ad_hoc(1) = 4; the ready_to_eat
+    // row (frozen lasagna) stays excluded, exactly as before that type's retirement.
     expect(r.cadence.cooks).toBe(4);
-    expect(r.cook_vs_convenience).toEqual({ cooked: 4, convenience: 1 });
   });
 
-  it("ranks ready_to_eat favorites by frequency", () => {
-    const r = retrospective(
-      [
-        { date: "2026-06-10", type: "ready_to_eat", name: "lasagna" },
-        { date: "2026-06-12", type: "ready_to_eat", name: "lasagna" },
-        { date: "2026-06-13", type: "ready_to_eat", name: "burrito" },
-      ],
-      index,
-      "30d",
-      NOW,
-    );
-    expect(r.ready_to_eat_favorites).toEqual([
-      { name: "lasagna", count: 2 },
-      { name: "burrito", count: 1 },
-    ]);
+  it("does not return cook_vs_convenience or ready_to_eat_favorites — both left the contract with the ready-to-eat concept", () => {
+    const r = retrospective(entries, index, "30d", NOW);
+    expect(r).not.toHaveProperty("cook_vs_convenience");
+    expect(r).not.toHaveProperty("ready_to_eat_favorites");
+  });
+
+  it("historical ready_to_eat rows aggregate without error: excluded from cadence, counted in the mixes", () => {
+    // No new type='ready_to_eat' row can be written anymore (log_cooked's shim converts
+    // it to ad_hoc) — this fixture represents rows already stored before the retirement.
+    const log: CookingLogEntry[] = [
+      { date: "2026-06-10", type: "recipe", recipe: "tacos", protein: "beef", cuisine: "mexican" },
+      { date: "2026-06-12", type: "ad_hoc", name: "fried rice", protein: "mixed" },
+      { date: "2026-06-15", type: "ready_to_eat", name: "frozen lasagna", protein: "beef", cuisine: "italian" },
+      { date: "2026-06-16", type: "ready_to_eat", name: "frozen burrito", protein: "beef", cuisine: "mexican" },
+    ];
+    const r = retrospective(log, index, "30d", NOW);
+    // Cadence counts only the recipe + ad_hoc rows — the two ready_to_eat rows stay
+    // excluded, exactly as before the type's retirement.
+    expect(r.cadence.cooks).toBe(2);
+    // Their inline protein/cuisine still feed the mixes.
+    expect(r.protein_mix.beef).toBe(3); // tacos + frozen lasagna + frozen burrito
+    expect(r.cuisine_mix.italian).toBe(1);
+    expect(r.cuisine_mix.mexican).toBe(2); // tacos + frozen burrito
+    expect(r).not.toHaveProperty("cook_vs_convenience");
+    expect(r).not.toHaveProperty("ready_to_eat_favorites");
   });
 
   it("buckets missing dimensions under unknown", () => {

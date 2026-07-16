@@ -80,7 +80,7 @@ jobs:
         # source still parses and maps to a well-formed skill set — the same validation
         # the deploy's build runs — catching a broken AGENT_INSTRUCTIONS.md before it
         # reaches any operator's publish.
-        working-directory: packages/worker
+        working-directory: packages/plugin
         run: node scripts/build-plugin.mjs --check
 
       - name: Authoring vault is current with src/vocab.js
@@ -565,7 +565,7 @@ jobs:
         # skills, and the deploy is Worker-first so it redeploys the (unchanged) Worker
         # before publishing, which is safe. assets/ is built at deploy time, not committed.
         run: |
-          git diff --name-only HEAD^ HEAD -- packages/worker/src/ packages/worker/wrangler.jsonc packages/contract/ packages/app/ packages/admin-app/ packages/ui/ package.json aube-lock.yaml pnpm-workspace.yaml packages/worker/AGENT_INSTRUCTIONS.md packages/worker/scripts/build-plugin.mjs \
+          git diff --name-only HEAD^ HEAD -- packages/worker/src/ packages/worker/wrangler.jsonc packages/contract/ packages/app/ packages/admin-app/ packages/ui/ package.json aube-lock.yaml pnpm-workspace.yaml packages/plugin/AGENT_INSTRUCTIONS.md packages/plugin/scripts/build-plugin.mjs \
             | grep -q . \
             && echo "relevant=true" >> "$GITHUB_OUTPUT" \
             || echo "relevant=false" >> "$GITHUB_OUTPUT"

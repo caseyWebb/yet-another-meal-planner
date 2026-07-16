@@ -211,10 +211,15 @@ export interface ClassifyInput {
 type Msg = { role: "system" | "user" | "assistant"; content: string };
 
 /** Authored facets the classifier should treat as authoritative (override-aware conditioning,
- *  recipe-facet-derivation D6). Currently `course`, so a Tier-B `course` override drives the
- *  dependent `side_search_terms` (non-empty iff the effective course includes `main`). */
+ *  recipe-facet-derivation D6), plus the import pipeline's non-authoritative tool hint
+ *  (recipe-import). `course` is a Tier-B override that drives the dependent
+ *  `side_search_terms` (non-empty iff the effective course includes `main`). `tools_hint` is
+ *  the schema.org `tool` list surfaced internally to import_recipe's URL path — it informs
+ *  the conservative `requires_equipment` classification only; it is never written directly
+ *  and never returned to the caller. */
 export interface ClassifyConditioning {
   course?: string[];
+  tools_hint?: string[];
 }
 
 function baseMessages(input: ClassifyInput, conditioning?: ClassifyConditioning): Msg[] {
@@ -223,13 +228,19 @@ function baseMessages(input: ClassifyInput, conditioning?: ClassifyConditioning)
     msgs.push({ role: "user", content: `Title: ${ex.title}\n${ex.body}` });
     msgs.push({ role: "assistant", content: JSON.stringify(ex.output) });
   }
-  const hint =
+  const courseHint =
     conditioning?.course && conditioning.course.length
       ? `\n\nThe recipe's author has specified course = ${JSON.stringify(
           conditioning.course,
         )}. Treat that as authoritative: set "course" to exactly that, and make "side_search_terms" consistent with it (non-empty iff it includes "main").`
       : "";
-  msgs.push({ role: "user", content: `Title: ${input.title}\n${input.content}${hint}` });
+  const toolsHint =
+    conditioning?.tools_hint && conditioning.tools_hint.length
+      ? `\n\nThe source page lists these tools: ${JSON.stringify(
+          conditioning.tools_hint,
+        )}. This is NOT authoritative — most listed tools are ordinary kitchen equipment (bowls, whisks, pans) and should NOT appear in requires_equipment. Apply the usual conservative rubric: include a tool only if it is genuinely one of the vocabulary tools AND the dish is impossible without it.`
+      : "";
+  msgs.push({ role: "user", content: `Title: ${input.title}\n${input.content}${courseHint}${toolsHint}` });
   return msgs;
 }
 

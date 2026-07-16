@@ -1,8 +1,7 @@
 // Read + analysis tools for the cooking-history / meal-planning capabilities:
 //   read_meal_plan  — current committed cook intent (D1-backed, for session resume)
 //   update_meal_plan — add/remove planned entries in the D1 `meal_plan` table
-//   retrospective   — aggregate the D1 cooking_log over a period (real mixes,
-//                     cadence, cook-vs-convenience, ready-to-eat favorites,
+//   retrospective   — aggregate the D1 cooking_log over a period (real mixes, cadence,
 //                     underused), joining type=recipe rows to the recipe index for
 //                     protein/cuisine.
 // Appending a cooking event rides the log_cooked tool (src/cooking-write.ts).
@@ -22,7 +21,7 @@ import type { WasteAnalyzer, WasteRange } from "./waste-shapes.js";
 import { loadRecipeIndex } from "./recipe-index.js";
 import { memberViewer } from "./visibility.js";
 import { mergeOverlay, type Overlay } from "./overlay.js";
-import { readOverlay, readPreferences } from "./profile-db.js";
+import { readOverlay, readPreferences, stampLastRetrospective } from "./profile-db.js";
 import type { RecipeIndex } from "./recipes.js";
 import { readMealPlan, applyMealPlanRowOps } from "./session-db.js";
 import { stampLastPlanned } from "./discovery-db.js";
@@ -117,6 +116,11 @@ export async function loadRetrospective(
     readSpendAnalyzer(env, username, spendRange),
     readWasteAnalyzer(env, username, wasteRange, resolvedWasteMapping.version),
   ]);
+  // Stamp the retrospective watermark (attention block, data-read-tools D8) — the
+  // last_planned_at precedent (stamped by update_meal_plan): reading the retrospective
+  // resets read_user_profile's attention.retrospective_due nudge. Only a SUCCESSFUL read
+  // reaches here (a validation_failed/index_unavailable throw above never stamps).
+  await stampLastRetrospective(env, username, new Date().toISOString().slice(0, 10));
   return { ...retrospective(entries, effective, period, new Date(), retroConfig), spend, waste };
 }
 
@@ -248,7 +252,7 @@ export function registerCookingTools(
     "retrospective",
     {
       description:
-        "Aggregate cooking history over a period from the cooking log. `period` accepts 'Nd' (e.g. '30d'), 'week', 'month', 'quarter', 'year', or 'all', and scopes `recipes_cooked`, `protein_mix`, `cuisine_mix` (non-recipe entries count through inline dimensions; missing dimensions bucket under `unknown`), meal-aware `cadence` (`cooks_per_week` counts recipe + ad_hoc only; `by_meal` counts breakfast/lunch/dinner/project rows whose meal is set; `meal_unknown` counts NULL-meal rows, which remain in the overall figure and are never assigned a fabricated meal), `cook_vs_convenience`, and frequency-ranked `ready_to_eat_favorites`. `underused` is independent of period: loved recipes — the caller's favorites plus revealed favorites cooked at least 3 times in the trailing 12 months — that are never cooked or stale for a fixed 30 days and in season now; rejected recipes are excluded. Each underused item carries `why` (`favorite` or `revealed`) and all-time `cook_count`, sorts stalest-first, and the list is capped at 15 while `underused_count` reports the pre-cap total. Optional `spend_range` independently accepts `4w`, `8w`, or `12w` (default `4w`). `spend` is the household's read-only Spend analyzer, independent of cooking period: bounded UTC ISO-Monday windows over captured non-voided facts with coverage-aware totals, weekly buckets, cost per meal, matched trend, budget comparisons, captured department/store/planned-vs-impulse breakdowns, deterministic top drivers and insight, plus `awaiting_mark_placed`. Optional `waste_range` independently accepts `4w`, `8w`, or `12w` (default `4w`), and optional `waste_mapping_version` selects a supported immutable avoidability mapping (default current). `waste` is the household's read-only Waste analyzer over captured Waste and eligible last-paid Spend history, with truthful monetary/classification coverage, weekly buckets, KPIs, breakdowns, most-wasted items, and deterministic insight. Treat partial or unavailable values as such; never infer missing spend or Waste value, and never count awaiting rows as spend. This retrospective tool is read-only, adds no analyzer or derived-value writer, and does not alter the separate existing pantry-disposition capture operation, which accepts no dollar value.",
+        "Aggregate cooking history over a period from the cooking log. `period` accepts 'Nd' (e.g. '30d'), 'week', 'month', 'quarter', 'year', or 'all', and scopes `recipes_cooked`, `protein_mix`, `cuisine_mix` (non-recipe entries count through inline dimensions; missing dimensions bucket under `unknown`; a historical row stored with the retired `ready_to_eat` type still contributes its dimensions here), and meal-aware `cadence` (`cooks_per_week` counts recipe + ad_hoc only — a historical `ready_to_eat` row stays excluded, exactly as before that type's retirement; `by_meal` counts breakfast/lunch/dinner/project rows whose meal is set; `meal_unknown` counts NULL-meal rows, which remain in the overall figure and are never assigned a fabricated meal). `underused` is independent of period: loved recipes — the caller's favorites plus revealed favorites cooked at least 3 times in the trailing 12 months — that are never cooked or stale for a fixed 30 days and in season now; rejected recipes are excluded. Each underused item carries `why` (`favorite` or `revealed`) and all-time `cook_count`, sorts stalest-first, and the list is capped at 15 while `underused_count` reports the pre-cap total. Optional `spend_range` independently accepts `4w`, `8w`, or `12w` (default `4w`). `spend` is the household's read-only Spend analyzer, independent of cooking period: bounded UTC ISO-Monday windows over captured non-voided facts with coverage-aware totals, weekly buckets, cost per meal, matched trend, budget comparisons, captured department/store/planned-vs-impulse breakdowns, deterministic top drivers and insight, plus `awaiting_mark_placed`. Optional `waste_range` independently accepts `4w`, `8w`, or `12w` (default `4w`), and optional `waste_mapping_version` selects a supported immutable avoidability mapping (default current). `waste` is the household's read-only Waste analyzer over captured Waste and eligible last-paid Spend history, with truthful monetary/classification coverage, weekly buckets, KPIs, breakdowns, most-wasted items, and deterministic insight. Treat partial or unavailable values as such; never infer missing spend or Waste value, and never count awaiting rows as spend. This retrospective tool is read-only, adds no analyzer or derived-value writer, and does not alter the separate existing pantry-disposition capture operation, which accepts no dollar value.",
       inputSchema: {
         period: z.string().optional(),
         spend_range: z.enum(["4w", "8w", "12w"]).optional(),

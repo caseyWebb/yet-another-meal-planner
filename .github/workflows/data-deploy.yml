@@ -305,7 +305,7 @@ jobs:
           # (a data-repo commit count alone can't be relied on to clear 0.1.126). <count>
           # keeps each republish strictly newer.
           VERSION="0.2.$(git rev-list --count HEAD)"
-          node _code/packages/worker/scripts/build-plugin.mjs --out plugin/yamp --mcp-url "$MCP_URL" --version "$VERSION"
+          node _code/packages/plugin/scripts/build-plugin.mjs --out plugin/yamp --mcp-url "$MCP_URL" --version "$VERSION"
           git add plugin/yamp
           # marketplace.json (committed in the data repo, → ./plugin/yamp) ships
           # too if present; the build does not generate it.

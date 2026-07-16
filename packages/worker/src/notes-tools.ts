@@ -16,17 +16,7 @@ import type { Tenant } from "./tenant.js";
 import { db } from "./db.js";
 import { ToolError, runTool } from "./errors.js";
 import { isVisible, memberViewer, lensHouseholds } from "./visibility.js";
-import {
-  readRecipeNotes,
-  insertRecipeNote,
-  updateRecipeNote,
-  removeRecipeNote,
-  readStoreNotes,
-  insertStoreNote,
-  updateStoreNote,
-  removeStoreNote,
-  type NoteTier,
-} from "./corpus-db.js";
+import { readRecipeNotes, insertRecipeNote, insertStoreNote, type NoteTier } from "./corpus-db.js";
 
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -154,59 +144,11 @@ export function registerNoteTools(
       }),
   );
 
-  server.registerTool(
-    "update_recipe_note",
-    {
-      description:
-        "Edit one of YOUR OWN recipe notes, addressed by its created_at (from add_recipe_note / read_recipe_notes). Only the fields you pass change (body / tags / tier); created_at is the immutable key. Passing `tier` re-tiers the note — this IS the tier-change surface, and it applies on the very next read ('public' = anyone who can see the recipe incl. the public cookbook site where the recipe is publicly visible; 'friends' = your household + friend households; 'private' = only you). The legacy `private` boolean is a deprecated alias (true → 'private', false → 'friends'); `tier` wins if both are passed. Self-scoped: it can only ever touch a note you authored — a created_at that matches only someone else's note returns not_found. Use it to fix a typo or refine an observation instead of stacking a correcting note.",
-      inputSchema: {
-        slug: z.string(),
-        created_at: z.string(),
-        body: z.string().optional(),
-        tags: z.array(z.string()).optional(),
-        tier: TIER_ENUM.optional(),
-        private: z.boolean().optional(),
-      },
-    },
-    ({ slug, created_at, body, tags, tier, private: isPrivate }) =>
-      runTool(async () => {
-        if (!SLUG_RE.test(slug)) {
-          throw new ToolError("validation_failed", `Invalid recipe slug: ${slug}`, { slug });
-        }
-        if (body !== undefined && !body.trim()) {
-          throw new ToolError("validation_failed", "note body must not be empty", { slug });
-        }
-        const resultTier = await updateRecipeNote(env, slug, memberId, created_at, {
-          body,
-          tags,
-          tier: resolveNoteTier(tier, isPrivate),
-        });
-        if (resultTier === null) {
-          throw new ToolError("not_found", `No note of yours on ${slug} with that created_at`, { slug, created_at });
-        }
-        return { slug, author: memberId, created_at, tier: resultTier };
-      }),
-  );
-
-  server.registerTool(
-    "remove_recipe_note",
-    {
-      description:
-        "Delete one of YOUR OWN recipe notes, addressed by its created_at. Self-scoped to your own notes, so you can only ever remove a note you authored; a created_at that matches only someone else's note returns not_found. Shared recipe content and other tenants' notes are untouched.",
-      inputSchema: { slug: z.string(), created_at: z.string() },
-    },
-    ({ slug, created_at }) =>
-      runTool(async () => {
-        if (!SLUG_RE.test(slug)) {
-          throw new ToolError("validation_failed", `Invalid recipe slug: ${slug}`, { slug });
-        }
-        const found = await removeRecipeNote(env, slug, memberId, created_at);
-        if (!found) {
-          throw new ToolError("not_found", `No note of yours on ${slug} with that created_at`, { slug, created_at });
-        }
-        return { slug, removed: true, created_at };
-      }),
-  );
+  // update_recipe_note / remove_recipe_note leave the MCP surface (recipe-notes): chat
+  // keeps only note CAPTURE (add_recipe_note) and the read; editing/deleting one's own
+  // note is a member web app surface (recipe detail) over the same shared operations
+  // (updateRecipeNote / removeRecipeNote, unchanged — still author-scoped, still
+  // reachable for a recipe that has left the caller's lens).
 }
 
 /**
@@ -220,7 +162,7 @@ export function registerStoreNoteTools(server: McpServer, memberId: string, env:
     "add_store_note",
     {
       description:
-        "Append an attributed note to a store — the single home for everything we know about it. Freeform observations ('fish counter closes at 6 PM', 'parking is brutal after 5', 'they stock the Kerrygold I like') AND the store's layout, captured by tag convention: tags:['layout'] for an aisle and its sections — LEAD the body with the aisle number ('Aisle 7: baking, spices, oils'); the order of layout notes by aisle number IS the walk path. tags:['location'] for where a non-obvious item hides ('Harissa: aisle 9, international foods, not condiments'). tags:['stock'] for a not-carried item (\"Doesn't carry fresh dill\"). Append-mostly; author is you. Set private=true to keep a note to yourself; default is shared. Correct your own notes with update_store_note / remove_store_note (addressed by created_at); across tenants, a later note supersedes an earlier one at read by recency.",
+        "Append an attributed note to a store — the single home for everything we know about it. Freeform observations ('fish counter closes at 6 PM', 'parking is brutal after 5', 'they stock the Kerrygold I like') AND the store's layout, captured by tag convention: tags:['layout'] for an aisle and its sections — LEAD the body with the aisle number ('Aisle 7: baking, spices, oils'); the order of layout notes by aisle number IS the walk path. tags:['location'] for where a non-obvious item hides ('Harissa: aisle 9, international foods, not condiments'). tags:['stock'] for a not-carried item (\"Doesn't carry fresh dill\"). Append-mostly; author is you. Set private=true to keep a note to yourself; default is shared. Correcting or removing your own notes is a member web app surface; across tenants, a later note supersedes an earlier one at read by recency.",
       inputSchema: {
         slug: z.string(),
         body: z.string(),
@@ -247,72 +189,8 @@ export function registerStoreNoteTools(server: McpServer, memberId: string, env:
       }),
   );
 
-  server.registerTool(
-    "read_store_notes",
-    {
-      description:
-        "Read the GROUP's attributed notes for a store. Returns { notes: [{ author, created_at, body, tags, private }] } aggregated across everyone in your group. You see your own private notes plus everyone's shared notes; other people's private notes are never shown. Surface these alongside read_store during the walk (hours, parking, where-they-stock-X).",
-      inputSchema: { slug: z.string() },
-    },
-    ({ slug }) =>
-      runTool(async () => {
-        if (!SLUG_RE.test(slug)) {
-          throw new ToolError("not_found", `Unknown store: ${slug}`, { slug });
-        }
-        return { slug, notes: await readStoreNotes(env, slug, memberId) };
-      }),
-  );
-
-  server.registerTool(
-    "update_store_note",
-    {
-      description:
-        "Edit one of YOUR OWN store notes, addressed by its created_at (from add_store_note / read_store_notes). Only the fields you pass change (body / tags / private); created_at is the immutable key. Self-scoped: it can only ever touch a note you authored — a created_at that matches only someone else's note returns not_found. This is the clean-correction path for a stale layout note after a remodel (edit it instead of stacking a contradicting note).",
-      inputSchema: {
-        slug: z.string(),
-        created_at: z.string(),
-        body: z.string().optional(),
-        tags: z.array(z.string()).optional(),
-        private: z.boolean().optional(),
-      },
-    },
-    ({ slug, created_at, body, tags, private: isPrivate }) =>
-      runTool(async () => {
-        if (!SLUG_RE.test(slug)) {
-          throw new ToolError("validation_failed", `Invalid store slug: ${slug}`, { slug });
-        }
-        if (body !== undefined && !body.trim()) {
-          throw new ToolError("validation_failed", "note body must not be empty", { slug });
-        }
-        const found = await updateStoreNote(env, slug, memberId, created_at, {
-          body,
-          tags,
-          private: isPrivate,
-        });
-        if (!found) {
-          throw new ToolError("not_found", `No note of yours on ${slug} with that created_at`, { slug, created_at });
-        }
-        return { slug, author: memberId, created_at };
-      }),
-  );
-
-  server.registerTool(
-    "remove_store_note",
-    {
-      description:
-        "Delete one of YOUR OWN store notes, addressed by its created_at — e.g. drop a pre-remodel layout note. Self-scoped to your own notes, so you can only ever remove a note you authored; a created_at that matches only someone else's note returns not_found. Other tenants' notes are untouched.",
-      inputSchema: { slug: z.string(), created_at: z.string() },
-    },
-    ({ slug, created_at }) =>
-      runTool(async () => {
-        if (!SLUG_RE.test(slug)) {
-          throw new ToolError("validation_failed", `Invalid store slug: ${slug}`, { slug });
-        }
-        const found = await removeStoreNote(env, slug, memberId, created_at);
-        if (!found) {
-          throw new ToolError("not_found", `No note of yours on ${slug} with that created_at`, { slug, created_at });
-        }
-        return { slug, removed: true, created_at };
-      }),
-  );
+  // read_store_notes / update_store_note / remove_store_note leave the MCP surface
+  // (in-store-fulfillment): add_store_note is the only store-note tool; reading and
+  // editing/removing one's own notes are member surfaces over the same shared
+  // operations (readStoreNotes / updateStoreNote / removeStoreNote, unchanged).
 }

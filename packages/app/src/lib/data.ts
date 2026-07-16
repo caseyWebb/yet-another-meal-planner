@@ -225,7 +225,6 @@ export interface ProfilePayload {
   diet_principles: string | null;
   kitchen: { owned: string[]; notes: Record<string, unknown> };
   staples: { name: string; perishable?: boolean }[];
-  ready_to_eat: Record<string, unknown>[];
   stockup: Record<string, unknown> | null;
   kroger: { linked: boolean };
 }

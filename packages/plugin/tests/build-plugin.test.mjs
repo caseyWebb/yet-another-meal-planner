@@ -120,7 +120,7 @@ test('renderWorkflowSkill prepends the loader and does NOT inline tier content',
   assert.doesNotMatch(md, /user-invocable/);
 });
 
-test('renderLibrarySkill emits a grocery-<tier> skill with a near-empty description', () => {
+test('renderLibrarySkill emits a yamp-<tier> library skill with a near-empty description', () => {
   const md = renderLibrarySkill('cart', parseInstructions(DOC).persona.cart);
   assert.match(md, /^---\nname: yamp-cart\ndescription: "/);
   assert.match(md, /Not invoked on its own/);
@@ -375,56 +375,38 @@ test('buildPluginFiles: skills without resource blocks produce identical output 
 
 // --- real-doc contract ---------------------------------------------------
 
-test('AGENT_INSTRUCTIONS.md: workflows with expected needs + library tiers', async () => {
+test('AGENT_INSTRUCTIONS.md: six workflow skills, single core tier, no needs, shop reference files', async () => {
   const md = await readFile(path.join(REPO_ROOT, 'AGENT_INSTRUCTIONS.md'), 'utf8');
   const parsed = parseInstructions(md);
   assert.deepEqual(validateParsed(parsed).errors, []);
-  assert.deepEqual(parsed.flows.map((f) => f.name), [
-    'meal-plan',
-    'update-pantry',
-    'cook',
-    'cooked',
-    'save-technique',
-    'save-buying-guide',
-    'add-recipe-feedback',
-    'add-recipe-note',
-    'add-ready-to-eat-feedback',
-    'import-recipe',
-    'merge-duplicate-recipes',
-    'recipe-sides',
-    'grocery-sale-check',
-    'cooking-retrospective',
-    'shop-groceries',
-    'configure-yamp-profile',
-    'report-yamp-bug',
-  ]);
-  const needs = Object.fromEntries(parsed.flows.map((f) => [f.name, f.needs]));
-  assert.deepEqual(needs['meal-plan'], ['cart', 'corpus', 'discovery']); // discovery-first retrieval flow
-  assert.deepEqual(needs['import-recipe'], ['corpus', 'discovery']); // defers triage/import mechanics to the shared tier
-  assert.deepEqual(needs['merge-duplicate-recipes'], ['corpus']); // operator merge review: corpus write tools only
-  assert.deepEqual(needs['recipe-sides'], ['corpus', 'discovery']); // standalone sides flow: shared side-resolution + import mechanics
-  assert.deepEqual(needs['grocery-sale-check'], []); // light flow: core only
-  assert.deepEqual(needs['cook'], []);
-  assert.deepEqual(needs['shop-groceries'], ['cart']);
+  assert.deepEqual(parsed.flows.map((f) => f.name), ['plan', 'shop', 'cook', 'pantry', 'setup', 'report-bug']);
 
-  // Library tiers emitted; workflows reference, don't inline.
+  // The rewritten persona carries a single core tier — no flow declares a depth need.
+  for (const f of parsed.flows) assert.deepEqual(f.needs, [], `flow "${f.name}" should need no depth tier`);
+
+  // Only the yamp-core library skill is emitted — the source declares no cart/corpus/discovery block.
   const files = buildPluginFiles(parsed, { mcpUrl: 'https://x' });
-  for (const tier of ['core', 'cart', 'corpus', 'discovery']) {
-    assert.ok(files.has(`skills/yamp-${tier}/SKILL.md`), `missing yamp-${tier}`);
+  assert.ok(files.has('skills/yamp-core/SKILL.md'), 'missing yamp-core');
+  for (const tier of ['cart', 'corpus', 'discovery']) {
+    assert.ok(!files.has(`skills/yamp-${tier}/SKILL.md`), `unexpected skills/yamp-${tier}/SKILL.md — persona ships core only`);
   }
-  // the meal-plan flow now loads the discovery tier (discovery-first) alongside cart + corpus.
-  assert.match(files.get('skills/meal-plan/SKILL.md'), /`yamp-core`, `yamp-cart`, `yamp-corpus` and `yamp-discovery`/);
-  assert.match(files.get('skills/import-recipe/SKILL.md'), /`yamp-core`, `yamp-corpus` and `yamp-discovery`/);
-  assert.match(files.get('skills/grocery-sale-check/SKILL.md'), /read the `yamp-core` skill before/);
 
-  // shop-groceries has 4 reference files extracted.
-  assert.ok(files.has('skills/shop-groceries/references/kroger-online.md'), 'missing kroger-online.md');
-  assert.ok(files.has('skills/shop-groceries/references/kroger-instore.md'), 'missing kroger-instore.md');
-  assert.ok(files.has('skills/shop-groceries/references/instore-walk.md'), 'missing instore-walk.md');
-  assert.ok(files.has('skills/shop-groceries/references/map-store.md'), 'missing map-store.md');
-  // SKILL.md body has pointers, not inline branch content.
-  assert.match(files.get('skills/shop-groceries/SKILL.md'), /read the `yamp-core` and `yamp-cart` skills/);
-  assert.doesNotMatch(files.get('skills/shop-groceries/SKILL.md'), /Stale-cart check/);
-  // cart prerequisite present.
-  assert.match(files.get('skills/shop-groceries/SKILL.md'), /yamp-cart/);
+  // Every workflow's prerequisite line loads yamp-core only (no depth tier to list).
+  for (const f of parsed.flows) {
+    assert.match(
+      files.get(`skills/${f.name}/SKILL.md`),
+      /read the `yamp-core` skill before continuing/,
+      `flow "${f.name}" should load only yamp-core`,
+    );
+  }
+
+  // shop carries three reference files — the flush branches, rewritten store-agnostic-first.
+  assert.ok(files.has('skills/shop/references/kroger-online.md'), 'missing kroger-online.md');
+  assert.ok(files.has('skills/shop/references/store-walk.md'), 'missing store-walk.md');
+  assert.ok(files.has('skills/shop/references/instacart.md'), 'missing instacart.md');
+  // SKILL.md body has pointers, not the inline branch content.
+  assert.match(files.get('skills/shop/SKILL.md'), /read `references\/kroger-online\.md`/);
+  assert.match(files.get('skills/shop/SKILL.md'), /read `references\/store-walk\.md`/);
+  assert.match(files.get('skills/shop/SKILL.md'), /read `references\/instacart\.md`/);
+  assert.doesNotMatch(files.get('skills/shop/SKILL.md'), /Kroger needs you to sign back in/);
 });

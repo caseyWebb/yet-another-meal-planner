@@ -1,21 +1,18 @@
-// The `suggest_night_vibes` tool + the shared derivation runner (night-vibe-archetype-derivation
-// capability). Loads the caller's taste-space (favorited + cooked recipes, their vectors +
-// descriptions), clusters + names archetypes (the pure engine + the small-model namer) or
-// cold-starts from taste text, then PHRASE-SPACE DEDUPES every candidate — cluster-derived and
+// The scheduled meal-vibe archetype derivation runner (meal-vibe-archetype-derivation
+// capability — the sole producer; there is no on-demand derivation tool). Loads the
+// caller's taste-space (favorited + cooked recipes, their vectors + descriptions),
+// clusters + names archetypes (the pure engine + the small-model namer) or cold-starts
+// from taste text, then PHRASE-SPACE DEDUPES every candidate — cluster-derived and
 // cold-start alike — against the palette, the member's pending + rejected `add_vibe` proposals, and
 // candidates kept earlier in the run, and ENQUEUES the survivors as `add_vibe` proposals into the
 // per-member reconcile queue (never writing `night_vibes` directly). Before enqueue it also
 // CONVERGES the member's already-accumulated pending near-duplicates onto one representative each
 // (marking the rest `superseded`), so redundancy heals organically. All the run's embedding work is
 // one batched, KV-cached `embedTextsCached` call, so a steady palette re-embeds nothing and derives
-// nothing. The scheduled generative reconcile pass reuses `runDerivation` (this module's core).
+// nothing.
 
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { z } from "zod";
 import type { Env } from "./env.js";
-import type { Tenant } from "./tenant.js";
 import type { AiTrigger } from "./ai.js";
-import { runTool } from "./errors.js";
 import { loadRecipeIndex, loadRecipeEmbeddings } from "./recipe-index.js";
 import { memberViewer } from "./visibility.js";
 import type { RecipeIndex } from "./recipes.js";
@@ -24,7 +21,6 @@ import { readOverlay } from "./profile-db.js";
 import { readCookedDatesByRecipe, readNightVibeVectors, readNightVibes } from "./night-vibe-db.js";
 import { deriveArchetypes, type TasteItem, type DerivedArchetype } from "./night-vibe-derive.js";
 import { nameCluster, starterVibesFromTaste } from "./night-vibe-naming.js";
-import { aliasDescription } from "./night-vibe-tools.js";
 import { enqueueProposal, readProposals, supersedeProposals, type PendingProposal } from "./reconcile-db.js";
 import { planQueueConvergence, filterCandidates, type PendingVibeProposal, type MealVector } from "./night-vibe-dedupe.js";
 import { embedTextsCached } from "./embedding.js";
@@ -246,33 +242,8 @@ function rationaleFor(c: DerivedArchetype, source: DerivationResult["source"]): 
   return `You keep cooking dishes like this${cadence} — add “${c.vibe}” to your rotation so a night is set aside for it?`;
 }
 
-export function registerSuggestNightVibesTool(server: McpServer, env: Env, tenant: Tenant): void {
-  const schema = {
-    max_suggestions: z.number().int().positive().max(8).optional(),
-    seed: z.number().int().optional(),
-  };
-  const handler = ({ max_suggestions, seed }: { max_suggestions?: number; seed?: number }) =>
-    runTool(async () => {
-      const resolvedSeed = seed ?? Number(new Date().toISOString().slice(0, 10).replace(/-/g, ""));
-      const result = await runDerivation(env, tenant.id, resolvedSeed, max_suggestions ?? DEFAULT_MAX_SUGGESTIONS, "request");
-      const note =
-        result.source === "none"
-          ? "no taste-space to derive from yet — cook a few meals or favorite some recipes, then try again"
-          : undefined;
-      return note ? { ...result, note } : result;
-    });
-  server.registerTool(
-    "suggest_meal_vibes",
-    {
-      description:
-        "Derive candidate MEAL VIBES for the caller from what they actually like and cook — cluster their favorites + cook history into archetypes, name each and classify its meal (breakfast | lunch | dinner) in one small-model call, infer a cadence from the observed cook interval, and drop any near-duplicate of a palette vibe, a pending or rejected suggestion, or another candidate this run (dedup keyed on (meal, phrase-space) — the same phrase in a different meal is not a duplicate). With too little history AND an empty palette, falls back to starter vibes from their taste notes (starters are dinner vibes — taste notes carry no per-meal signal). A member who already has a palette but too little history to cluster is derived nothing (source `none`). Each surviving candidate is ENQUEUED as an `add_vibe` proposal (its payload carrying the vibe's `meal`) the caller confirms via confirm_proposal — this tool NEVER writes the palette. It also converges the caller's already-accumulated pending near-duplicates onto one suggestion each (the rest resolved `superseded`, dropped from the queue). Use at onboarding to seed an empty palette — especially to seed lunch/breakfast vibes when those cadences are nonzero — or any time to grow it. Returns { candidates, enqueued, superseded, source }.",
-      inputSchema: schema,
-    },
-    handler,
-  );
-  server.registerTool(
-    "suggest_night_vibes",
-    { description: aliasDescription("suggest_meal_vibes"), inputSchema: schema },
-    handler,
-  );
-}
+// suggest_meal_vibes / suggest_night_vibes leave the MCP surface entirely
+// (meal-vibe-archetype-derivation): the scheduled generative reconcile pass
+// (runArchetypeDerivationJob, below) is the sole derivation producer now — there is no
+// on-demand derivation tool. `runDerivation` (this module's core) is unchanged and
+// shared by the cron.

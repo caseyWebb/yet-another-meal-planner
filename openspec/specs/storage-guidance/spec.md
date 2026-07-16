@@ -19,17 +19,17 @@ The system SHALL maintain an `guidance/ingredient_storage/` content tree under t
 
 ### Requirement: Read-only access tools, no write path
 
-The system SHALL expose `guidance/ingredient_storage/` through the unified guidance read tools `list_guidance("ingredient_storage")` (returning class slugs each with an optional one-line description) and `read_guidance("ingredient_storage", slugs)` (returning the named entries' content) — defined by the `cooking-techniques` capability. The storage corpus SHALL remain effectively read-only: the `ingredient_storage` domain SHALL be **excluded from the `save_guidance` writable-domain allowlist**, so a write addressed to it is rejected and mutates nothing. The guarantee is that the agent can never alter ingredient-storage content; it is enforced by the allowlist rather than by the absence of any write tool.
+The system SHALL expose `guidance/ingredient_storage/` through the unified guidance read tool `read_guidance` (defined by the `cooking-techniques` capability): `read_guidance("ingredient_storage")` with no `slugs` lists the class slugs each with an optional one-line description, and `read_guidance("ingredient_storage", slugs)` returns the named entries' content. The storage corpus SHALL be read-only from the agent surface **because no agent guidance write path exists at all** — guidance content is operator-curated via the admin surface — so a member session can never alter ingredient-storage content by construction, with no allowlist needed.
 
 #### Scenario: List then read on demand
 
-- **WHEN** the agent calls `list_guidance("ingredient_storage")` and then `read_guidance("ingredient_storage", ["tender-herbs", "_ethylene"])`
-- **THEN** the list returns class slugs and the read returns the content of exactly the named entries
+- **WHEN** the agent calls `read_guidance("ingredient_storage")` and then `read_guidance("ingredient_storage", ["tender-herbs", "_ethylene"])`
+- **THEN** the first call returns class slugs (with descriptions) and the second returns the content of exactly the named entries
 
-#### Scenario: Storage domain cannot be written
+#### Scenario: No agent write path exists
 
-- **WHEN** a `save_guidance("ingredient_storage", …)` write is attempted
-- **THEN** it is rejected (the domain is not on the writable allowlist) and the storage corpus is unchanged
+- **WHEN** the member MCP tool surface is enumerated
+- **THEN** no guidance write tool appears in any domain, and the storage corpus is mutable only through operator curation
 
 ### Requirement: Item-to-class mapping by agent judgment, not a manifest
 

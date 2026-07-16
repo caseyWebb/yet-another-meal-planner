@@ -60,25 +60,6 @@ Each detected pair SHALL be surfaced as **one** `merge_recipes` proposal in the 
 - **WHEN** the scan runs on a deployment with no operator tenant configured
 - **THEN** it enqueues nothing and stamps nothing, recording a skipped-run health summary, so configuring an operator later yields the full first-convergence sweep
 
-### Requirement: A confirmed merge is agent-guided and non-destructive
-
-Accepting a `merge_recipes` proposal SHALL apply **no automatic corpus write** — the apply path records the decision only. The merge itself SHALL be performed conversationally by the agent through existing write tools: reading both recipes and their notes, agreeing the survivor with the operator, folding what is worth keeping into the survivor (tags, `pairs_with`, body details) via `update_recipe`, re-pointing `pairs_with` references to the duplicate, and finally marking the duplicate's frontmatter with `duplicate_of: <survivor-slug>` — after which the proposal is confirmed accepted (merge-then-accept, so an interrupted flow leaves the proposal pending). The `duplicate_of` marker SHALL be reversible: it excludes the recipe from the projected index (see the `recipe-index` capability) while the R2 file, member notes, and cooking-log history remain intact, and removing the marker restores the recipe. A tombstoned recipe's derived row prunes with the existing orphan prune, so it SHALL NOT re-trigger detection. Rejecting the proposal SHALL keep both recipes and permanently suppress the pair.
-
-#### Scenario: Accept writes nothing automatically
-
-- **WHEN** `confirm_proposal` accepts a `merge_recipes` proposal
-- **THEN** the proposal is marked accepted and no recipe file or index row is changed by the apply path itself
-
-#### Scenario: The marked duplicate leaves the index and the detector's reach
-
-- **WHEN** the agent-guided merge marks the duplicate `duplicate_of: <survivor>` and the next reconcile tick runs
-- **THEN** the duplicate projects no index row, its derived embedding row is pruned, and no future scan can propose it again
-
-#### Scenario: A tombstone is reversible
-
-- **WHEN** the `duplicate_of` field is removed from a marked recipe
-- **THEN** the next projection restores its index row and downstream derivation re-runs, with its notes and history intact throughout
-
 ### Requirement: The scan records job health
 
 The scan SHALL record per-run health like the sibling scheduled jobs: a `job_health` upsert and a `job_runs` history row under its own job name with a counts summary (recipes scanned, pairs found, proposals enqueued, stamps pruned, or the skipped reason), plus a usage-trends point. A thrown tick SHALL record `ok: false`, notify, and rethrow so the platform's native cron status reflects it.
@@ -92,4 +73,18 @@ The scan SHALL record per-run health like the sibling scheduled jobs: a `job_hea
 
 - **WHEN** a scan tick throws
 - **THEN** the job records `ok: false` with the error and rethrows
+
+### Requirement: Merge resolution defers to the operator admin surface
+
+Accepting a `merge_recipes` proposal SHALL remain gated on operator review and SHALL never auto-merge. With `update_recipe` removed from the MCP surface, the fold/re-point/tombstone resolution has no chat writer: until the operator admin merge screen ships, pending `merge_recipes` proposals SHALL remain in the durable queue with no corpus write, and the operator MAY reject a pair via `confirm_proposal(accept: false)` — permanent suppression, both recipes kept. The `duplicate_of` tombstone semantics are unchanged and SHALL be honored by the future resolution surface: reversible exclusion from the projected index, with the R2 file, member notes, and cooking-log history intact, and the derived-row orphan prune preventing re-detection.
+
+#### Scenario: An accepted merge has no resolution surface yet
+
+- **WHEN** the operator wants to merge a proposed pair before the admin merge screen exists
+- **THEN** the proposal stays pending in the queue, no corpus write occurs, and nothing is auto-merged
+
+#### Scenario: Rejection stays available from the queue
+
+- **WHEN** the operator rejects a `merge_recipes` proposal via `confirm_proposal(accept: false)`
+- **THEN** both recipes are kept, and the pair is permanently suppressed from re-proposal
 

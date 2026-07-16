@@ -6,6 +6,13 @@
 // write-time validator `log_cooked` reuses; `log_cooked` layers a real
 // `SELECT 1 FROM recipes WHERE slug=?` slug-resolution check on top (the corpus is
 // now queryable from the Worker, so validation moved from the build to the write).
+//
+// `ready_to_eat` is RETIRED from the type a new entry may declare (remove-ready-eat):
+// `log_cooked`'s one-window shim (cooking-write.ts) accepts it and converts it to
+// `ad_hoc` before `validateNewEntry` ever runs, so this module's NEW-entry check only
+// ever needs to know recipe/ad_hoc. Historical rows stored with `type = 'ready_to_eat'`
+// keep it, though — nothing re-types them — so the TYPE below stays wide enough to
+// represent a row read back from D1.
 
 export const COOKING_LOG_TYPES = ["recipe", "ready_to_eat", "ad_hoc"] as const;
 export type CookingLogType = (typeof COOKING_LOG_TYPES)[number];
@@ -21,7 +28,7 @@ export interface CookingLogEntry {
   type: CookingLogType;
   /** Present iff type === "recipe". */
   recipe?: string;
-  /** Present for ready_to_eat / ad_hoc. */
+  /** Present for ad_hoc (and historical ready_to_eat rows). */
   name?: string;
   /** Optional inline dimensions for non-recipe entries. */
   protein?: string;
@@ -37,12 +44,18 @@ const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
  * Validate a single new entry the agent is appending. Returns an error string,
  * or null when valid. STRUCTURAL only — `log_cooked` adds the recipe-slug
  * resolution check (`SELECT 1 FROM recipes WHERE slug=?`) at write time.
+ *
+ * The type check is narrower than `COOKING_LOG_TYPES`: a NEW entry is `recipe` or
+ * `ad_hoc` only — `ready_to_eat` is retired from the write contract. `log_cooked`'s
+ * shim converts an incoming `ready_to_eat` to `ad_hoc` before this ever runs, so an
+ * entry reaching here still carrying `ready_to_eat` (or any other unknown value)
+ * falls straight through to the same `validation_failed` rejection.
  */
 export function validateNewEntry(entry: CookingLogEntry): string | null {
   if (!entry.date || !ISO_DATE_RE.test(entry.date)) {
     return `cooking-log entry has an invalid date: ${JSON.stringify(entry.date)}`;
   }
-  if (!COOKING_LOG_TYPES.includes(entry.type)) {
+  if (entry.type !== "recipe" && entry.type !== "ad_hoc") {
     return `cooking-log entry has an invalid type: ${JSON.stringify(entry.type)}`;
   }
   if (entry.type === "recipe") {

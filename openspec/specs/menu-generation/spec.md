@@ -6,12 +6,12 @@ Defines the agent-side orchestration of a menu request end-to-end: the parallel 
 ## Requirements
 ### Requirement: Menu-request context pre-pass
 
-On a menu request, the agent SHALL gather all choice-independent context in a single parallel batch **before** selecting recipes, but SHALL NOT load the whole corpus. The batch SHALL always include: `read_pantry()`, `read_user_profile()`, `retrospective("month")`, `list_new_for_me()` (the background sweep's discoveries for the caller — replacing the retired `fetch_rss_discoveries`/`read_discovery_inbox` pull), and `get_weather_forecast()` unconditionally (not gated on fulfillment mode). It SHALL NOT include a whole-corpus `search_recipes` membership load — recipe selection is done by **bounded retrieval** (vibe-bearing `search_recipes` specs for open-ended weeks; a vibe-less `query` spec for a named dish), issued after the context is in hand, not by dumping every recipe into context. `read_user_profile()` returns preferences, taste, diet_principles, kitchen, staples, stockup, and ready_to_eat in one call — there is no need for separate `read_preferences`, `read_taste`, `read_diet_principles`, or `read_staples` calls. When the caller's **primary fulfillment store has a warmed flyer**, the batch SHALL additionally include the **store-aware flyer read** — `kroger_flyer()` when the primary store is Kroger, `store_flyer()` when it is a satellite-scanned store — so satellite-scanned sales feed selection the same way Kroger sales do; when the primary store has no warmed flyer (no Kroger rollup and no satellite scan), the flyer read SHALL be omitted and sale signals SHALL NOT influence recipe selection for that session. `ready_to_eat_available` is NOT called during the meal-plan flow — it is a buy-time tool used by the flush skills. `kroger_prices` is NOT issued in this batch; it is used only as a targeted deal-check for a handful of comparable items when verifying a specific sale claim during selection, and SHALL NOT be a full pre-pass over the proposed ingredient set — that costing belongs to the place-grocery-order flow. The recipe candidate space is the caller's **available corpus** — the whole shared corpus **minus the caller's rejects**, with no per-member "active set" and no `draft` recipes — reached through `search_recipes` rather than loaded wholesale. The **raw pantry** SHALL be loaded as a *selection* input — before recipes are chosen — so that what the member already has informs which recipes are proposed (and so the agent can spot inventory stand-ins), and so its at-risk perishables can seed `boost_ingredients` on the use-it-up search. There SHALL be no `verify_pantry_*` call: pantry matching, freshness, and inventory substitutions are the agent reasoning over the loaded pantry. The fulfillment mode SHALL be determined from the loaded preferences before the batch fires; if genuinely unknown, that is the one thing to confirm first. The weather tool is a best-effort read: when it returns any structured error, the agent SHALL continue with season-based reasoning and SHALL NOT surface the failure to the user. An empty `read_user_profile().staples` array means no staples-driven prompting for that session — this is not a failure.
+On a menu request, the agent SHALL gather all choice-independent context in a single parallel batch **before** selecting recipes, but SHALL NOT load the whole corpus. The batch SHALL always include: `read_pantry()`, `read_user_profile()`, `retrospective("month")`, `list_new_for_me()` (the background sweep's discoveries for the caller — replacing the retired `fetch_rss_discoveries`/`read_discovery_inbox` pull), and `get_weather_forecast()` unconditionally (not gated on fulfillment mode). It SHALL NOT include a whole-corpus `search_recipes` membership load — recipe selection is done by **bounded retrieval** (vibe-bearing `search_recipes` specs for open-ended weeks; a vibe-less `query` spec for a named dish), issued after the context is in hand, not by dumping every recipe into context. `read_user_profile()` returns preferences, taste, diet_principles, kitchen, staples, and stockup in one call — there is no need for separate `read_preferences`, `read_taste`, `read_diet_principles`, or `read_staples` calls. When the caller's **primary fulfillment store has a warmed flyer**, the batch SHALL additionally include the **store-aware flyer read** — `kroger_flyer()` when the primary store is Kroger, `store_flyer()` when it is a satellite-scanned store — so satellite-scanned sales feed selection the same way Kroger sales do; when the primary store has no warmed flyer (no Kroger rollup and no satellite scan), the flyer read SHALL be omitted and sale signals SHALL NOT influence recipe selection for that session. `kroger_prices` is NOT issued in this batch; it is used only as a targeted deal-check for a handful of comparable items when verifying a specific sale claim during selection, and SHALL NOT be a full pre-pass over the proposed ingredient set — that costing belongs to the place-grocery-order flow. The recipe candidate space is the caller's **available corpus** — the whole shared corpus **minus the caller's rejects**, with no per-member "active set" and no `draft` recipes — reached through `search_recipes` rather than loaded wholesale. The **raw pantry** SHALL be loaded as a *selection* input — before recipes are chosen — so that what the member already has informs which recipes are proposed (and so the agent can spot inventory stand-ins), and so its at-risk perishables can seed `boost_ingredients` on the use-it-up search. There SHALL be no `verify_pantry_*` call: pantry matching, freshness, and inventory substitutions are the agent reasoning over the loaded pantry. The fulfillment mode SHALL be determined from the loaded preferences before the batch fires; if genuinely unknown, that is the one thing to confirm first. The weather tool is a best-effort read: when it returns any structured error, the agent SHALL continue with season-based reasoning and SHALL NOT surface the failure to the user. An empty `read_user_profile().staples` array means no staples-driven prompting for that session — this is not a failure.
 
 #### Scenario: Open-ended request gathers context but does not dump the corpus
 
 - **WHEN** the user says "make me a menu" and their fulfillment mode is Kroger
-- **THEN** the agent calls `read_pantry`, `read_user_profile`, `retrospective`, `list_new_for_me`, `kroger_flyer`, and `get_weather_forecast()` in a single batch before proposing; it does NOT issue a whole-corpus `search_recipes` membership load, `ready_to_eat_available`, a full-cart `kroger_prices`, `fetch_rss_discoveries`/`read_discovery_inbox`, or separate `read_preferences`/`read_taste`/`read_diet_principles`/`read_staples` calls; recipe candidates are obtained by bounded `search_recipes` retrieval afterward
+- **THEN** the agent calls `read_pantry`, `read_user_profile`, `retrospective`, `list_new_for_me`, `kroger_flyer`, and `get_weather_forecast()` in a single batch before proposing; it does NOT issue a whole-corpus `search_recipes` membership load, a full-cart `kroger_prices`, `fetch_rss_discoveries`/`read_discovery_inbox`, or separate `read_preferences`/`read_taste`/`read_diet_principles`/`read_staples` calls; recipe candidates are obtained by bounded `search_recipes` retrieval afterward
 
 #### Scenario: No activation gate on the candidate set
 
@@ -22,36 +22,6 @@ On a menu request, the agent SHALL gather all choice-independent context in a si
 
 - **WHEN** the caller's `primary` store is a non-Kroger store slug that has a warmed satellite scan
 - **THEN** the batch includes `store_flyer()` for that store and its sales inform recipe selection the same way a Kroger flyer would, rather than being omitted
-
-#### Scenario: A store with no warmed flyer omits sale signals
-
-- **WHEN** the caller's primary store has neither a Kroger rollup nor a satellite scan
-- **THEN** the flyer read is omitted and sale data plays no role in recipe selection for that session
-
-#### Scenario: Pantry informs selection, not just the buy list
-
-- **WHEN** the member has salmon and bok choy on hand and makes an open-ended request
-- **THEN** the agent reasons over the loaded pantry to favor recipes that use what is already on hand (passing at-risk items as `boost_ingredients` on the use-it-up search), before finalizing the proposed set
-
-#### Scenario: Pantry confirmation pass is not skipped
-
-- **WHEN** any menu request is made
-- **THEN** the agent runs the comprehensive pantry confirmation pass (including staples and spices) by reasoning over the loaded pantry, rather than proposing a menu without considering pantry state
-
-#### Scenario: Weather forecast is included in the pre-pass batch
-
-- **WHEN** the user makes a menu request
-- **THEN** `get_weather_forecast()` is called in the parallel context batch alongside `read_pantry`, `read_user_profile`, etc., before any recipe is selected
-
-#### Scenario: Forecast failure does not break the menu flow
-
-- **WHEN** `get_weather_forecast()` returns an error (any error variant)
-- **THEN** the agent continues with season-based recipe selection and does not tell the user the weather lookup failed
-
-#### Scenario: Absent staples list does not break the menu flow
-
-- **WHEN** `read_user_profile().staples` returns `[]` because the member has no staples in D1
-- **THEN** the agent continues without staples-driven prompting; no error is surfaced
 
 ### Requirement: Named-dish exhaustive enumeration
 
@@ -74,7 +44,7 @@ When the user names a specific dish, the agent SHALL resolve it deterministicall
 
 ### Requirement: Full proposal assembly
 
-The agent SHALL assemble a menu proposal by **driving `propose_meal_plan`** with an ephemeral vibe set distilled from the gathered context and the user's original message (the `meal-plan-proposal` capability), then layering narration over the returned proposal — it SHALL NOT hand-compose the week by selecting recipes over a retrieved union itself. The distillation SHALL incorporate, when applicable, freeform constraints (mood/cuisine/effort such as "comfort food," "something Italian," "I'm feeling lazy") as vibe phrases, hard exclusions as facets, and each entry's **`meal`** when the request is meal-specific (an omitted `meal` defaults to dinner). The narration layered over the proposal SHALL incorporate, when applicable: recipe notes surfaced from `read_recipe_notes` (tweaks worth baking in, warnings, group ratings); meal-prep callouts for `meal_preppable` recipes; **inventory substitutions** spotted by reasoning over the loaded pantry (a stand-in the member already has for a missing ingredient, surfaced during the pantry pass for confirmation before the item reaches the buy list); a **staples-backed restocking callout** (cross-referencing the `staples` array from `read_user_profile()` against pantry — missing or low staples are surfaced and confirmed before being added to the list; perishable staples with a stale `last_verified_at` are batched into a staleness nudge); and — **Kroger sessions only** — sale-based substitution opportunities (surfaced after flyer/price data is available, substitute candidates enumerated from world knowledge and verified via `kroger_prices`/`kroger_flyer`) and stockup alerts for bulk-buy items on sale. The proposal SHALL be sized from the member's **per-meal `cadence` map** (from `read_user_profile().preferences.cadence`) unless the user specified otherwise — passed as the `meals` input to `propose_meal_plan` (a meal the user didn't ask about and whose cadence is 0 gets no slots). When a requested meal comes back as explicit empty slots (`empty_reason: "no_palette_for_meal"`), the agent SHALL surface the nudge — offer to add a meal vibe for that meal (`add_meal_vibe`) or author an `ephemeral_vibes` entry carrying that `meal` — rather than silently re-proposing dinner. Ready-to-eat options, on-sale RTE discovery, and restock-of-RTE-favorites are **not** part of the proposal.
+The agent SHALL assemble a menu proposal by **driving `propose_meal_plan`** with an ephemeral vibe set distilled from the gathered context and the user's original message (the `meal-plan-proposal` capability), then layering narration over the returned proposal — it SHALL NOT hand-compose the week by selecting recipes over a retrieved union itself. The distillation SHALL incorporate, when applicable, freeform constraints (mood/cuisine/effort such as "comfort food," "something Italian," "I'm feeling lazy") as vibe phrases, hard exclusions as facets, and each entry's **`meal`** when the request is meal-specific (an omitted `meal` defaults to dinner). The narration layered over the proposal SHALL incorporate, when applicable: recipe notes surfaced from `read_recipe_notes` (tweaks worth baking in, warnings, group ratings); meal-prep callouts for `meal_preppable` recipes; **inventory substitutions** spotted by reasoning over the loaded pantry (a stand-in the member already has for a missing ingredient, surfaced during the pantry pass for confirmation before the item reaches the buy list); a **staples-backed restocking callout** (cross-referencing the `staples` array from `read_user_profile()` against pantry — missing or low staples are surfaced and confirmed before being added to the list; perishable staples with a stale `last_verified_at` are batched into a staleness nudge); and — **Kroger sessions only** — sale-based substitution opportunities (surfaced after flyer/price data is available, substitute candidates enumerated from world knowledge and verified via `kroger_prices`/`kroger_flyer`) and stockup alerts for bulk-buy items on sale. The proposal SHALL be sized from the member's **per-meal `cadence` map** (from `read_user_profile().preferences.cadence`) unless the user specified otherwise — passed as the `meals` input to `propose_meal_plan` (a meal the user didn't ask about and whose cadence is 0 gets no slots). When a requested meal comes back as explicit empty slots (`empty_reason: "no_palette_for_meal"`), the agent SHALL surface the nudge — offer to add a meal vibe for that meal (`add_meal_vibe`) or author an `ephemeral_vibes` entry carrying that `meal` — rather than silently re-proposing dinner.
 
 #### Scenario: Recipe notes are surfaced with the proposal
 
@@ -90,26 +60,6 @@ The agent SHALL assemble a menu proposal by **driving `propose_meal_plan`** with
 
 - **WHEN** the user says "something comforting, I'm feeling lazy this week"
 - **THEN** the agent distills a comforting, low-effort ephemeral vibe set (and any facet gates) passed to `propose_meal_plan`, then runs the pantry pass and restock list over the returned proposal
-
-#### Scenario: Staples restocking callout is backed by loaded staples data
-
-- **WHEN** olive oil is in the member's staples list and absent from pantry
-- **THEN** the agent includes olive oil in the restocking callout and confirms with the user before adding to the shopping list; model judgment is not the primary signal
-
-#### Scenario: Sale substitutions appear with the proposal (Kroger), not during pantry verify
-
-- **WHEN** a menu recipe calls for an ingredient whose substitute is on sale (Kroger session)
-- **THEN** the sale-based substitution is surfaced alongside the returned proposal (after flyer data), with the substitute candidates enumerated by the agent and verified via the Kroger tools, not during the pantry confirmation pass
-
-#### Scenario: Proposal sized from the cadence map
-
-- **WHEN** the user makes an open-ended request and their cadence is `{ breakfast: 0, lunch: 2, dinner: 3 }`
-- **THEN** the agent passes `meals: { lunch: 2, dinner: 3 }` to `propose_meal_plan` (not a padded count), unless the user asked for different counts
-
-#### Scenario: An empty meal palette becomes a nudge, not a silent fallback
-
-- **WHEN** the returned proposal's lunch slots are explicit empty slots with `empty_reason: "no_palette_for_meal"`
-- **THEN** the agent offers to add a lunch meal vibe or authors a lunch-mealed ephemeral entry, and never fills the lunch request from the dinner palette
 
 ### Requirement: To-buy list assembled from recipe content, notes, and the loaded pantry
 
@@ -219,7 +169,7 @@ The meal-plan flow SHALL be validated by a scripted smoke test of three seeded r
 
 ### Requirement: Discoveries are dispositioned conversationally
 
-The agent SHALL let the user disposition discoveries through natural requests, mapping them to the favorites/rejections model: a "loved that one" request SHALL `toggle_favorite` the recipe; a "stop suggesting that" / "hide that" request SHALL `toggle_reject` it for the caller. Because discoveries are now auto-imported by the background sweep (there is no pre-import candidate for a member to triage in-conversation), a "stop suggesting that" disposition on a surfaced recipe is `toggle_reject` (per-tenant); `reject_discovery` is reserved for group-wide suppression of a discovery **source** (see the `recipe-discovery` capability), not a per-conversation disposition of a surfaced recipe. Ready-to-eat items SHALL be dispositioned analogously via `update_ready_to_eat` (favorite / reject) against the caller's per-tenant catalog. There is no `draft` state: an imported recipe is an available corpus recipe.
+The agent SHALL let the user disposition discoveries through natural requests, mapping them to the favorites/rejections model: a "loved that one" request SHALL `toggle_favorite` the recipe; a "stop suggesting that" / "hide that" request SHALL `toggle_reject` it for the caller. Because discoveries are now auto-imported by the background sweep (there is no pre-import candidate for a member to triage in-conversation), a "stop suggesting that" disposition on a surfaced recipe is `toggle_reject` (per-tenant); `reject_discovery` is reserved for group-wide suppression of a discovery **source** (see the `recipe-discovery` capability), not a per-conversation disposition of a surfaced recipe. There is no `draft` state: an imported recipe is an available corpus recipe.
 
 #### Scenario: A loved discovery is favorited
 
@@ -230,11 +180,6 @@ The agent SHALL let the user disposition discoveries through natural requests, m
 
 - **WHEN** the user says to stop suggesting a recipe surfaced by `list_new_for_me`
 - **THEN** the agent calls `toggle_reject(slug)` for the caller (hiding it for them, leaving it for others), not `reject_discovery`
-
-#### Scenario: An unwanted ready-to-eat item is rejected
-
-- **WHEN** the user says to stop suggesting a ready-to-eat item
-- **THEN** the agent calls `update_ready_to_eat(slug, { reject: true })` in the caller's catalog, affecting no other member, with no `status` or `rating`
 
 ### Requirement: Soft variety honoring backed by real history
 

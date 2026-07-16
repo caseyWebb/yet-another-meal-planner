@@ -197,7 +197,7 @@ function titleOf(recipe: Record<string, unknown>): string {
 /**
  * Normalize a schema.org Recipe to the parser's return shape. Returns
  * `{ ok: false, missing }` when it yields no ingredients or no instructions —
- * the signal parse_recipe maps to the structured `incomplete` error.
+ * the signal `import_recipe`'s URL path maps to the structured `incomplete` error.
  */
 export function normalizeRecipe(recipe: Record<string, unknown>): NormalizeResult {
   const ingredients = asStringArray(recipe.recipeIngredient);

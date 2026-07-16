@@ -4,7 +4,7 @@ update-when: the toolchain, Worker dev or deploy workflow, repo layout, or contr
 
 # Contributing
 
-How to work **on** yamp itself — its persona/skills (generated from [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md)) **and** the `yamp` Worker, both built in this repo. For how the system is *built* (the technical model), read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) first — this guide assumes it.
+How to work **on** yamp itself — its persona/skills (generated from [`AGENT_INSTRUCTIONS.md`](packages/plugin/AGENT_INSTRUCTIONS.md)) **and** the `yamp` Worker, both built in this repo. For how the system is *built* (the technical model), read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) first — this guide assumes it.
 
 ## Repo map
 
@@ -14,10 +14,10 @@ There is **no data in this repo** — the data lives in a separate (public) data
 | --- | --- |
 | `src/`, `test/`, `wrangler.jsonc` | the repo root **is** the Cloudflare Worker (TypeScript) hosting the `yamp` MCP server + OAuth provider |
 | `packages/app/`, `packages/admin-app/`, `packages/ui/` | the member web app (React 19 SPA served at `/`), the operator admin SPA (served at `/admin`), and their shared shadcn/ui components + Tailwind v4 theme tokens (raw-TS `workspace:*` exports) |
-| `scripts/` | build tooling: `build-plugin.mjs` (the plugin bundle), `build-vault.mjs` (the Obsidian authoring vault, from `vault-template/` + `src/vocab.js`), `merge-wrangler-config.mjs` (the deploy config merge). The recipe index + cookbook are derived by the Worker, not built here; the corpus is copied/edited via `rclone` (see [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md)). |
+| `scripts/` | build tooling: `build-vault.mjs` (the Obsidian authoring vault, from `vault-template/` + `src/vocab.js`), `merge-wrangler-config.mjs` (the deploy config merge). The recipe index + cookbook are derived by the Worker, not built here; the corpus is copied/edited via `rclone` (see [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md)). |
 | `vault-template/`, `vault/` | the authoring vault's authored **source** and its **generated** output (the corpus-authoring Obsidian vault; `vault/` is committed like `plugin/`, never hand-edited) |
 | `docs/` | [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) (the technical model) · [`SCHEMAS.md`](docs/SCHEMAS.md) (file formats) · [`TOOLS.md`](docs/TOOLS.md) (the tool contract) · [`SELF_HOSTING.md`](docs/SELF_HOSTING.md) (operator setup) |
-| `AGENT_INSTRUCTIONS.md` | the agent persona; the build source for the plugin bundle (generated, **not committed here** — the deploy publishes it to the operator's data-repo marketplace) |
+| `packages/plugin/` | the `AGENT_INSTRUCTIONS.md` persona source, its generator (`scripts/build-plugin.mjs`), and the generator's tests; the build source for the plugin bundle (generated, **not committed here** — the deploy publishes it to the operator's data-repo marketplace) |
 | `openspec/` | the change/spec workflow — `changes/archive/` is the build history, `specs/` is the living contract |
 | `.github/workflows/` | `ci.yml` (the only push-triggered workflow) + the reusable `data-deploy.yml` operators call |
 
@@ -41,7 +41,7 @@ The Worker is the root package. One `package.json` carries both the Worker deps 
 ```bash
 aubr dev             # wrangler dev — local Worker; point MCP Inspector at the local URL
 aubr test            # vitest run — Worker unit tests (test/*.test.ts)
-aubr test:tooling    # node --test — build-plugin / merge-config / SW-denylist / readme-badge tests (tests/*.test.mjs)
+aubr test:tooling    # node --test — merge-config / SW-denylist / readme-badge tests (tests/*.test.mjs); plugin tests live in packages/plugin
 aubr typecheck       # tsc --noEmit (recursive: Worker + contract + satellite + app + ui)
 aubr test:app        # Playwright — the member-app browser gate (seeded invite login; app/visual/)
 aubr build:app       # vite build — the member SPA → packages/worker/assets/
@@ -62,7 +62,7 @@ aubr deploy          # wrangler deploy — normally NOT run by hand (see Deploym
 
 **wrangler config has a code-vs-operator ownership split.** `data-deploy.yml` merges the two configs (`scripts/merge-wrangler-config.mjs`): **code-level** keys (`main`, `compatibility_date`, `compatibility_flags`, `triggers`, `observability`) come from *this repo's* `wrangler.jsonc`, so a new code-level setting (e.g. a cron trigger) propagates to every operator on their next deploy — put such changes here. The **binding set** likewise comes from code so a new binding propagates: `kv_namespaces`/`d1_databases` carry their bindings from code while taking each id from the operator (code ids stripped), and `ai` (no id, no secret — Workers AI is account-scoped) propagates verbatim. **A new binding type must be added to the merge explicitly** — the merge is an allowlist, not a passthrough, so an unhandled binding is silently dropped from the deployed config. **Operator-owned** keys (`vars`, `kv_namespaces` ids, `name`, `routes`) come from the operator's config; the code repo's `vars`/KV-ids are the maintainer's and are *stripped* by the merge so they never reach another operator.
 
-**Auto-deploy on merge to main.** When Worker- or plugin-relevant paths change (`src/**`, `wrangler.jsonc`, `package.json`, `aube-lock.yaml`, `AGENT_INSTRUCTIONS.md`, `scripts/build-plugin.mjs`), `ci.yml`'s `trigger-deploy` job fires `gh workflow run deploy.yml --repo caseyWebb/yet-another-meal-planner-deployment` automatically — but only after the `test` and `no-open-changes` jobs pass. The deploy redeploys the Worker then republishes the plugin, so a persona-only change reaches members' skills (Worker-first). This requires a fine-grained PAT with `actions: write` on the data repo stored as `DATA_REPO_ACTIONS_TOKEN` in this repo's secrets. Doc/test/openspec-only pushes skip the trigger. Self-hosters manage their own deploy trigger.
+**Auto-deploy on merge to main.** When Worker- or plugin-relevant paths change (`src/**`, `wrangler.jsonc`, `package.json`, `aube-lock.yaml`, `packages/plugin/AGENT_INSTRUCTIONS.md`, `packages/plugin/scripts/build-plugin.mjs`), `ci.yml`'s `trigger-deploy` job fires `gh workflow run deploy.yml --repo caseyWebb/yet-another-meal-planner-deployment` automatically — but only after the `test` and `no-open-changes` jobs pass. The deploy redeploys the Worker then republishes the plugin, so a persona-only change reaches members' skills (Worker-first). This requires a fine-grained PAT with `actions: write` on the data repo stored as `DATA_REPO_ACTIONS_TOKEN` in this repo's secrets. Doc/test/openspec-only pushes skip the trigger. Self-hosters manage their own deploy trigger.
 
 To kick a deploy manually (e.g. after a doc-only push that still needs a redeploy, or to re-run a failed deploy):
 
@@ -100,13 +100,13 @@ aubr test:tooling                         # node --test (tests/, fixture-based) 
 
 ## Building the plugin (`AGENT_INSTRUCTIONS.md` → the bundle)
 
-`AGENT_INSTRUCTIONS.md` is the single source; `scripts/build-plugin.mjs` generates the plugin bundle (library + workflow skills, `plugin.json`, `.mcp.json`) from it. **The bundle is not committed in this repo** — each operator's deploy builds it with *their* connector URL and publishes it to their public data-repo marketplace (see [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md)). So after editing `AGENT_INSTRUCTIONS.md` (or a `src/` tool description the skills quote), you don't commit a bundle — you keep the source valid and the next deploy republishes.
+`packages/plugin/AGENT_INSTRUCTIONS.md` is the single source; `packages/plugin/scripts/build-plugin.mjs` generates the plugin bundle (library + workflow skills, `plugin.json`, `.mcp.json`) from it. **The bundle is not committed in this repo** — each operator's deploy builds it with *their* connector URL and publishes it to their public data-repo marketplace (see [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md)). So after editing `AGENT_INSTRUCTIONS.md` (or a `src/` tool description the skills quote), you don't commit a bundle — you keep the source valid and the next deploy republishes.
 
 To inspect the output locally or validate the source:
 
 ```bash
-aubr build:plugin                        # throwaway build → dist/yamp-plugin/ (placeholder URL; for inspection)
-node scripts/build-plugin.mjs --check    # parse + validate only, no write (what CI runs)
+aubr build:plugin                                    # throwaway build → dist/yamp-plugin/ (placeholder URL; for inspection)
+node packages/plugin/scripts/build-plugin.mjs --check    # parse + validate only, no write (what CI runs)
 ```
 
 The build bakes the **connector URL** into `.mcp.json` (claude.ai doesn't honor a plugin `userConfig` variable, so the URL is fixed at build time). The deploy passes the operator's `--mcp-url` and a `--version` (the data repo's commit count — monotonic per operator, which is what claude.ai's strictly-greater auto-update gate needs); a local build without `--mcp-url` uses a placeholder and warns. The bundle is **generated** — never hand-edit it; edit `AGENT_INSTRUCTIONS.md`.

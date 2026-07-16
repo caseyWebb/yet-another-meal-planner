@@ -57,8 +57,8 @@ function fmtIssues(err: z.ZodError): string {
 }
 
 /**
- * The functional facts one recipe carries — the same fields `parse_recipe` returns,
- * plus identity. Publisher prose (headnotes) and images are deliberately NOT part of
+ * The functional facts one recipe carries — the same fields `import_recipe`'s URL path
+ * parses, plus identity. Publisher prose (headnotes) and images are deliberately NOT part of
  * the contract (functional-facts-only ingestion); the consumer-facing `description` is
  * derived on-cron by the Worker and is NOT a wire field. The author-provided `summary`
  * (a short author summary) IS a functional fact and is carried optionally.

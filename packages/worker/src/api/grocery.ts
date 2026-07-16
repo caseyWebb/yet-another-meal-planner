@@ -168,11 +168,13 @@ export const groceryArea = new Hono<ApiEnv>()
     const view = await computeToBuyView(c.env, tenant.id, { enrich: c.req.query("enrich") === "1" });
     return jsonWithEtag(c, view);
   })
-  // The alternatives-only substitution read (inline-substitution-hints D4): one shared
-  // op with the suggest_substitutions tool, over fresh order wiring. Member-initiated
-  // and ONLINE-ONLY (D12) — no ETag, never offline-queued or replayed; read-only on
-  // the server (the op writes nothing; acting on a suggestion reuses the existing
-  // writes). The sibling/pantry/flyer hints this op used to also carry now ride
+  // The alternatives-only substitution read (inline-substitution-hints D4): the shared
+  // suggestSubstitutions op, over fresh order wiring, reachable here only — the member
+  // MCP surface carries no suggest_substitutions tool (ingredient-matching; read_to_buy's
+  // enrich variant and the order-review widget's app ops cover the agent path).
+  // Member-initiated and ONLINE-ONLY (D12) — no ETag, never offline-queued or replayed;
+  // read-only on the server (the op writes nothing; acting on a suggestion reuses the
+  // existing writes). The sibling/pantry/flyer hints this op used to also carry now ride
   // `GET /grocery/to-buy?enrich=1` instead.
   .post("/grocery/substitutions", requireSession, async (c) => {
     const tenant = c.get("tenant");

@@ -186,6 +186,26 @@ describe("classifyRecipe", () => {
     expect(dough!.side_search_terms).toEqual([]);
     expect(dough!.meal_preppable).toBe(true);
   });
+
+  it("a tools_hint is surfaced in the prompt as non-authoritative (recipe-import's tool-list hint)", async () => {
+    const seen: unknown[][] = [];
+    const env = fakeEnv([VALID_MAIN], (m) => seen.push(m as unknown[]));
+    await classifyRecipe(env, { title: "X", content: "..." }, null, 2, { tools_hint: ["stand mixer", "whisk"] });
+    const msgs = seen[0] as { role: string; content: string }[];
+    const lastUser = [...msgs].reverse().find((m) => m.role === "user")!;
+    expect(lastUser.content).toContain("stand mixer");
+    expect(lastUser.content).toContain("whisk");
+    expect(lastUser.content).toMatch(/NOT authoritative/i);
+  });
+
+  it("no tools_hint means no tool-list line in the prompt", async () => {
+    const seen: unknown[][] = [];
+    const env = fakeEnv([VALID_MAIN], (m) => seen.push(m as unknown[]));
+    await classifyRecipe(env, { title: "X", content: "..." }, null);
+    const msgs = seen[0] as { role: string; content: string }[];
+    const lastUser = [...msgs].reverse().find((m) => m.role === "user")!;
+    expect(lastUser.content).not.toMatch(/NOT authoritative/i);
+  });
 });
 
 describe("cleanedTitleOrFallback (the word-subset guard)", () => {

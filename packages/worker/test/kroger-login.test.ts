@@ -1,10 +1,13 @@
 import { describe, it, expect } from "vitest";
-import { buildServer } from "../src/tools.js";
+import { buildServer, type RegistrationContext } from "../src/tools.js";
 import { withServer, invokeTool } from "./tool-harness.js";
 import { redeemAuthNonce } from "../src/oauth.js";
 import type { KvStore } from "../src/kroger-user.js";
 import type { Env } from "../src/env.js";
 import type { Tenant } from "../src/tenant.js";
+
+/** kroger_login_url is Kroger-gated (mcp-tool-gating); this tool exercises only that gate. */
+const KROGER_CTX: RegistrationContext = { profile: "self-hosted", operator: false, kroger: true, instacart: false };
 
 /** An in-memory KV satisfying the small surface the consent-nonce path uses. */
 function memKv(): KvStore {
@@ -37,7 +40,7 @@ const tenant: Tenant = { id: "casey", member: "casey" };
 describe("kroger_login_url tool", () => {
   it("returns a consent URL embedding a nonce bound to the caller's tenant", async () => {
     const kv = memKv();
-    const server = buildServer(fakeEnv(kv), tenant, "https://yamp.example.com");
+    const server = buildServer(fakeEnv(kv), tenant, "https://yamp.example.com", KROGER_CTX);
     const out = await withServer(server, (c) => invokeTool(c, "kroger_login_url", {}));
 
     expect(out.isError).toBe(false);
@@ -51,7 +54,7 @@ describe("kroger_login_url tool", () => {
 
   it("ignores any tenant passed as an argument — the link binds to the grant tenant", async () => {
     const kv = memKv();
-    const server = buildServer(fakeEnv(kv), tenant, "https://yamp.example.com");
+    const server = buildServer(fakeEnv(kv), tenant, "https://yamp.example.com", KROGER_CTX);
     // The empty input schema strips unknown keys; an attempt to name another tenant is ignored.
     const out = await withServer(server, (c) =>
       invokeTool(c, "kroger_login_url", { tenant: "victim" }),

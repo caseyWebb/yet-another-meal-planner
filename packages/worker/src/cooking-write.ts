@@ -53,6 +53,7 @@ import { isRowId } from "./ids.js";
 import { recipeVector } from "./recipe-index.js";
 import { readNightVibeVectors, vibeSatisfactionInsertStmt } from "./night-vibe-db.js";
 import { matchCookedVibes } from "./vibe-satisfaction.js";
+import type { DeprecationWarning } from "./preferences.js";
 
 function today(): string {
   return new Date().toISOString().slice(0, 10);
@@ -90,6 +91,10 @@ export interface LogCookedResult {
   cleared_plan_row?: ClearedPlanRow | null;
   /** e.g. the stale-plan_row_id note ("already cleared — logged without clearing"). */
   note?: string;
+  /** The D21 deprecation convention: present only when a deprecated input shape was
+   *  accepted and converted. Today: an incoming `type: "ready_to_eat"` converted to
+   *  `type: "ad_hoc"` (remove-ready-to-eat's one-window shim). */
+  warnings?: DeprecationWarning[];
 }
 
 interface PlanRowLite {
@@ -117,9 +122,18 @@ export async function logCooked(
   input: LogCookedInput,
   opts: { dedupe?: boolean } = {},
 ): Promise<LogCookedResult> {
+  // One-window accept-and-convert shim (remove-ready-to-eat, the D21 deprecation
+  // convention): a stale plugin's `type: "ready_to_eat"` is accepted and converted to
+  // `type: "ad_hoc"` HERE, before structural validation, dedupe, and the plan-clear
+  // logic below ever run — so all of it operates on the converted form (name/date/
+  // meal/inline dims carry over unchanged; `ad_hoc` never clears a plan row, same as
+  // `ready_to_eat` never did). After the window (a follow-up tasklet, not this change),
+  // removing this conversion lets `ready_to_eat` fall straight through to
+  // `validateNewEntry`'s generic invalid-type rejection.
+  const convertedFromReadyToEat = input.type === "ready_to_eat";
   const entry: CookingLogEntry = {
     date: input.date && input.date.length > 0 ? input.date : today(),
-    type: input.type,
+    type: convertedFromReadyToEat ? "ad_hoc" : input.type,
   };
   if (typeof input.recipe === "string") entry.recipe = input.recipe;
   if (typeof input.name === "string") entry.name = input.name;
@@ -264,6 +278,9 @@ export async function logCooked(
       : null;
   }
   if (note) result.note = note;
+  if (convertedFromReadyToEat) {
+    result.warnings = [{ key: "type", reason: "retired", superseded_by: "ad_hoc" }];
+  }
   return result;
 }
 
@@ -276,10 +293,10 @@ export function registerCookingWriteTools(
     "log_cooked",
     {
       description:
-        "Log one cooking event to the caller's cooking history (D1-backed, no commit_sha). `type` is recipe | ready_to_eat | ad_hoc; `date` defaults to today (ISO YYYY-MM-DD). `meal` (breakfast | lunch | dinner | project) is optional on every type — omitted stores NULL, meaning 'unknown / not a meal' (a baked loaf logs with NO meal; never guess `project` — cooking a PLANNED project logs { type: 'recipe', meal: 'project' }). A `recipe` entry needs a `recipe` slug that MUST resolve against the recipe index (an unknown slug is rejected, not_found) and clears AT MOST ONE meal-plan row by a deterministic order: (1) a supplied `plan_row_id` clears exactly that row — if that row now holds a DIFFERENT recipe the call is a structured `conflict` and nothing is written, and if the row no longer exists the cook is still logged with `cleared_plan_row: null` plus a note (deliberately NO fall-through to the slug stages, so a replay never consumes an unrelated duplicate); (2) else the exact (recipe, meal, date) match when the entry carries a meal; (3) else the earliest-due row for the slug (planned_for ASC NULLS LAST, id ASC), never consuming a meal='project' row unless the entry's meal IS 'project'; (4) no match → no clear (an off-plan cook). An explicitly-duplicated recipe therefore survives its first cook — one cook clears one row. Vibe satisfaction is attributed at cook time by cosine against the palette, scoped to vibes of the entry's meal (a NULL meal matches all vibes), with the cleared row's from_vibe as a guaranteed reset. A ready_to_eat / ad_hoc entry needs a `name` and may carry inline `protein`/`cuisine` dimensions. last_cooked is DERIVED from the log — never set it by hand; logging a recipe updates its effective last_cooked automatically. Returns { logged, cleared_plan_row? ({ id, recipe, meal, planned_for } | null), note? }.",
+        "Log one cooking event to the caller's cooking history (D1-backed, no commit_sha). `type` is recipe | ad_hoc; `date` defaults to today (ISO YYYY-MM-DD). `meal` (breakfast | lunch | dinner | project) is optional on every type — omitted stores NULL, meaning 'unknown / not a meal' (a baked loaf logs with NO meal; never guess `project` — cooking a PLANNED project logs { type: 'recipe', meal: 'project' }). A `recipe` entry needs a `recipe` slug that MUST resolve against the recipe index (an unknown slug is rejected, not_found) and clears AT MOST ONE meal-plan row by a deterministic order: (1) a supplied `plan_row_id` clears exactly that row — if that row now holds a DIFFERENT recipe the call is a structured `conflict` and nothing is written, and if the row no longer exists the cook is still logged with `cleared_plan_row: null` plus a note (deliberately NO fall-through to the slug stages, so a replay never consumes an unrelated duplicate); (2) else the exact (recipe, meal, date) match when the entry carries a meal; (3) else the earliest-due row for the slug (planned_for ASC NULLS LAST, id ASC), never consuming a meal='project' row unless the entry's meal IS 'project'; (4) no match → no clear (an off-plan cook). An explicitly-duplicated recipe therefore survives its first cook — one cook clears one row. Vibe satisfaction is attributed at cook time by cosine against the palette, scoped to vibes of the entry's meal (a NULL meal matches all vibes), with the cleared row's from_vibe as a guaranteed reset. An `ad_hoc` entry needs a `name` and may carry inline `protein`/`cuisine` dimensions. last_cooked is DERIVED from the log — never set it by hand; logging a recipe updates its effective last_cooked automatically. For one deprecation window, a stale `type: \"ready_to_eat\"` write is still accepted and CONVERTED to `ad_hoc` (name/date/meal/inline dims carried over as-is; dedupe and the plan-clear logic run on the converted form) — the success return then carries `warnings: [{ key: \"type\", reason: \"retired\", superseded_by: \"ad_hoc\" }]`; after the window it is rejected like any unknown type. Returns { logged, cleared_plan_row? ({ id, recipe, meal, planned_for } | null), note?, warnings? }.",
       inputSchema: {
         date: z.string().optional(),
-        type: z.enum(["recipe", "ready_to_eat", "ad_hoc"]),
+        type: z.enum(["recipe", "ad_hoc", "ready_to_eat"]),
         recipe: z.string().optional(),
         name: z.string().optional(),
         protein: z.string().optional(),
@@ -290,8 +307,13 @@ export function registerCookingWriteTools(
     },
     (input) =>
       runTool(async () => {
-        const { logged, cleared_plan_row, note } = await logCooked(env, username, input);
-        return { logged, ...(cleared_plan_row !== undefined ? { cleared_plan_row } : {}), ...(note ? { note } : {}) };
+        const { logged, cleared_plan_row, note, warnings } = await logCooked(env, username, input);
+        return {
+          logged,
+          ...(cleared_plan_row !== undefined ? { cleared_plan_row } : {}),
+          ...(note ? { note } : {}),
+          ...(warnings ? { warnings } : {}),
+        };
       }),
   );
 }
