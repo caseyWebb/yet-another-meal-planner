@@ -133,3 +133,25 @@ describe("runLensReconcileJob (the scheduled wrapper)", () => {
     expect(h.rows<{ job: string }>("job_runs").some((r) => r.job === LENS_RECONCILE_JOB)).toBe(true);
   });
 });
+
+// Regression: production D1 caps queries at 100 bound variables ("variable number must
+// be between ?1 and ?100"), which the first shipped reconcile hit the moment a real
+// corpus (>100 unattached slugs per tick) reached the origin/match IN-list queries —
+// every tick failed and nothing ever attached. The sqlite harness now enforces D1's
+// limit, so this test fails without the chunked queries.
+describe("D1 bind-limit safety", () => {
+  it("attaches a 150-slug tick without exceeding 100 binds per query", async () => {
+    const h = sqliteEnv(["casey"]);
+    for (let i = 0; i < 150; i += 1) seedRecipe(h, `bulk-${String(i).padStart(3, "0")}`);
+    const env = withOperator(h, "casey");
+    const summary = await reconcileLensAttachment(env, { cap: 200 });
+    expect(summary.operator_fallback).toBe(150);
+    expect(summary.skipped_no_operator).toBe(0);
+    const rows = h.rows<{ recipe: string; tenant: string }>("recipe_imports");
+    expect(rows).toHaveLength(150);
+    expect(new Set(rows.map((r) => r.tenant))).toEqual(new Set(["casey"]));
+    // Converged: a second tick plans zero writes.
+    const again = await reconcileLensAttachment(env, { cap: 200 });
+    expect(again.scanned).toBe(0);
+  });
+});
