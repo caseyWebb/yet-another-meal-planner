@@ -37,13 +37,16 @@ function denylistRegexes() {
   });
 }
 
-/** Representative request paths for one run_worker_first entry. */
+/** Representative request paths for one run_worker_first entry. Workbox matches the
+ *  denylist against pathname + search, so every entry gets a query-string variant too —
+ *  Cloudflare Access appends `?__cf_access_message=...` on re-auth redirects, and that
+ *  URL must stay Worker-owned (the /admin?… "not found" dead-end regression). */
 function representativesOf(entry) {
   if (entry.endsWith("/*")) {
     const base = entry.slice(0, -2);
-    return [`${base}/anything`, `${base}/a/b`];
+    return [`${base}/anything`, `${base}/a/b`, `${base}/a?x=1`];
   }
-  return [entry];
+  return [entry, `${entry}?x=1`];
 }
 
 test("every run_worker_first prefix is covered by the SPA's navigateFallbackDenylist", () => {
@@ -66,9 +69,31 @@ test("dotted Worker paths (/health.svg-style) are covered", () => {
   assert.ok(regexes.some((re) => re.test("/health.svg")));
 });
 
+test("Access re-auth redirect URLs are denylisted (query string straight after the prefix)", () => {
+  // The observed regression: Cloudflare Access redirects back to /admin with
+  // `?__cf_access_message=unauthorized` appended, and the SW must let it through to the
+  // edge — a cached member-shell answer strands the operator on a not-found page until
+  // they clear site data.
+  const regexes = denylistRegexes();
+  assert.ok(regexes.some((re) => re.test("/admin?__cf_access_message=unauthorized")));
+});
+
+test("Cloudflare's edge-owned /cdn-cgi paths are denylisted", () => {
+  // Not in run_worker_first (they never reach the Worker), so pinned explicitly: the
+  // Access login/logout/callback navigations ride /cdn-cgi/access/* on this origin and
+  // must never be answered from the SW precache.
+  const regexes = denylistRegexes();
+  for (const path of ["/cdn-cgi/access/callback?code=1", "/cdn-cgi/access/logout"]) {
+    assert.ok(
+      regexes.some((re) => re.test(path)),
+      `${path} must be denylisted but falls through to the SPA shell`,
+    );
+  }
+});
+
 test("SPA client routes are NOT denylisted (the fallback still serves the app)", () => {
   const regexes = denylistRegexes();
-  for (const path of ["/", "/login", "/grocery", "/plan", "/recipe/some-slug", "/healthy-recipes"]) {
+  for (const path of ["/", "/login", "/grocery", "/plan", "/recipe/some-slug", "/recipe/some-slug?tab=notes", "/healthy-recipes"]) {
     assert.ok(
       !regexes.some((re) => re.test(path)),
       `${path} must fall back to the SPA shell but matches the denylist`,

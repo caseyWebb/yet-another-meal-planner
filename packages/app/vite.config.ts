@@ -71,10 +71,16 @@ export default defineConfig({
         globIgnores: ["admin/**"],
         // The SPA fallback must never shadow a Worker-owned path client-side either:
         // mirror wrangler.jsonc's run_worker_first enumeration (member-app-shell) —
-        // pinned by tests/navigate-denylist.test.mjs against config drift.
+        // pinned by tests/navigate-denylist.test.mjs against config drift. Workbox
+        // matches these against pathname + search, so `?` must terminate a prefix too
+        // (Cloudflare Access redirects back to /admin?__cf_access_message=... on
+        // re-auth, and a cached member-shell answer would strand the operator on a
+        // not-found page). `cdn-cgi` is Cloudflare's edge-owned namespace (the Access
+        // login/logout/callback endpoints) — never in run_worker_first because it never
+        // reaches the Worker, but it must bypass the SW for the same reason.
         navigateFallback: "index.html",
         navigateFallbackDenylist: [
-          /^\/(mcp|api|admin|oauth|authorize|token|register|satellite|cookbook|health|source|\.well-known)(\/|$|\.)/,
+          /^\/(mcp|api|admin|oauth|authorize|token|register|satellite|cookbook|health|source|cdn-cgi|\.well-known)(\/|$|\.|\?)/,
         ],
       },
     }),
