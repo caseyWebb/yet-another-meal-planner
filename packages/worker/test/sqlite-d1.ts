@@ -34,12 +34,25 @@ function asNamed(binds: unknown[]): Record<string, unknown> {
   return named;
 }
 
+/** Production D1 rejects any query binding more than 100 variables ("variable number
+ *  must be between ?1 and ?100"); node's SQLite allows 999+, so an unbounded IN-list
+ *  passes tests and dies in production (the lens-reconcile bug). Enforce D1's limit. */
+const D1_MAX_BINDS = 100;
+function assertD1BindLimit(binds: unknown[], sql: string): void {
+  if (binds.length > D1_MAX_BINDS) {
+    throw new Error(
+      `D1 query failed: D1_ERROR: variable number must be between ?1 and ?${D1_MAX_BINDS} (test harness: ${binds.length} binds): ${sql.slice(0, 120)}`,
+    );
+  }
+}
+
 function makeD1(raw: DatabaseSync): D1Database {
   const prepare = (sql: string): D1PreparedStatement => {
     let binds: unknown[] = [];
     const stmt = {
       bind(...v: unknown[]) {
         binds = normBinds(v);
+        assertD1BindLimit(binds, sql);
         return stmt;
       },
       async first<T>() {

@@ -39,6 +39,11 @@ export const LENS_RECONCILE_JOB = "lens-reconcile";
  *  it in the same PR if the captured unattached count demands it. */
 export const LENS_RECONCILE_MAX_PER_TICK = 200;
 
+/** D1's hard per-query limit is 100 bound variables; IN-lists stay safely under it. */
+const IN_LIST_CHUNK = 90;
+/** Grant-write batch size — bounded per db.batch call (see the write-site comment). */
+const BATCH_CHUNK = 100;
+
 /** What one reconcile tick did (the job_health summary — tenant-count-free). */
 export interface LensReconcileSummary {
   /** Unattached recipes examined this tick (≤ the per-tick cap). */
@@ -120,21 +125,29 @@ export async function reconcileLensAttachment(
   };
   if (unattached.length === 0 && drifted.length === 0) return summary; // converged: zero writes
 
-  // Resolve `via` origins for every slug this tick touches, in one query.
+  // Resolve `via` origins for every slug this tick touches. The slug set can reach
+  // 2×cap, and D1 rejects any query binding more than 100 variables ("variable number
+  // must be between ?1 and ?100") — so the IN-lists run in bind-safe chunks.
   const slugs = [...new Set([...unattached.map((r) => r.slug), ...drifted.map((m) => m.recipe)])];
-  const placeholders = slugs.map((_, i) => `?${i + 1}`).join(", ");
-  const originRows = await db(env).all<OriginRow>(
-    `SELECT slug, source, pushed FROM discovery_log WHERE outcome = 'imported' AND slug IN (${placeholders})`,
-    ...slugs,
+  const inChunks = async <T>(query: (placeholders: string) => string): Promise<T[]> => {
+    const out: T[] = [];
+    for (let i = 0; i < slugs.length; i += IN_LIST_CHUNK) {
+      const part = slugs.slice(i, i + IN_LIST_CHUNK);
+      const placeholders = part.map((_, j) => `?${j + 1}`).join(", ");
+      out.push(...(await db(env).all<T>(query(placeholders), ...part)));
+    }
+    return out;
+  };
+  const originRows = await inChunks<OriginRow>(
+    (ph) => `SELECT slug, source, pushed FROM discovery_log WHERE outcome = 'imported' AND slug IN (${ph})`,
   );
   const origins = new Map<string, OriginRow>();
   for (const o of originRows) if (o.slug && !origins.has(o.slug)) origins.set(o.slug, o);
 
-  // Match rows per unattached slug (attribution-derived attachment), one query.
+  // Match rows per unattached slug (attribution-derived attachment), same chunking.
   const unattachedSet = new Set(unattached.map((r) => r.slug));
-  const matchRows = await db(env).all<MatchRow>(
-    `SELECT recipe, tenant, member, matched_at FROM discovery_matches WHERE recipe IN (${placeholders})`,
-    ...slugs,
+  const matchRows = await inChunks<MatchRow>(
+    (ph) => `SELECT recipe, tenant, member, matched_at FROM discovery_matches WHERE recipe IN (${ph})`,
   );
   const matchesBySlug = new Map<string, MatchRow[]>();
   for (const m of matchRows) {
@@ -182,7 +195,13 @@ export async function reconcileLensAttachment(
   }
 
   if (grants.length > 0) {
-    await db(env).batch(grants.map((g) => importGrantStmt(env, g)));
+    // Chunked defensively too: a tick can mint up to ~2×cap grant statements, and
+    // keeping batches small stays well inside D1's per-request bounds. Each chunk is
+    // atomic; a mid-run failure leaves earlier chunks committed, which is safe — every
+    // statement is an idempotent INSERT OR IGNORE the next tick re-plans from scratch.
+    for (let i = 0; i < grants.length; i += BATCH_CHUNK) {
+      await db(env).batch(grants.slice(i, i + BATCH_CHUNK).map((g) => importGrantStmt(env, g)));
+    }
   }
   return summary;
 }
