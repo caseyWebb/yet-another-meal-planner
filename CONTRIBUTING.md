@@ -14,8 +14,7 @@ There is **no data in this repo** — the data lives in a separate (public) data
 | --- | --- |
 | `src/`, `test/`, `wrangler.jsonc` | the repo root **is** the Cloudflare Worker (TypeScript) hosting the `yamp` MCP server + OAuth provider |
 | `packages/app/`, `packages/admin-app/`, `packages/ui/` | the member web app (React 19 SPA served at `/`), the operator admin SPA (served at `/admin`), and their shared shadcn/ui components + Tailwind v4 theme tokens (raw-TS `workspace:*` exports) |
-| `scripts/` | build tooling: `build-vault.mjs` (the Obsidian authoring vault, from `vault-template/` + `src/vocab.js`), `merge-wrangler-config.mjs` (the deploy config merge). The recipe index + cookbook are derived by the Worker, not built here; the corpus is copied/edited via `rclone` (see [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md)). |
-| `vault-template/`, `vault/` | the authoring vault's authored **source** and its **generated** output (the corpus-authoring Obsidian vault; `vault/` is committed like `plugin/`, never hand-edited) |
+| `scripts/` | build tooling: `merge-wrangler-config.mjs` (the deploy config merge). The recipe index + cookbook are derived by the Worker, not built here; the corpus is copied/edited via `rclone` (see [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md)). |
 | `docs/` | [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) (the technical model) · [`SCHEMAS.md`](docs/SCHEMAS.md) (file formats) · [`TOOLS.md`](docs/TOOLS.md) (the tool contract) · [`SELF_HOSTING.md`](docs/SELF_HOSTING.md) (operator setup) |
 | `packages/plugin/` | the `AGENT_INSTRUCTIONS.md` persona source, its generator (`scripts/build-plugin.mjs`), and the generator's tests; the build source for the plugin bundle (generated, **not committed here** — the deploy publishes it to the operator's data-repo marketplace) |
 | `openspec/` | the change/spec workflow — `changes/archive/` is the build history, `specs/` is the living contract |
@@ -111,17 +110,6 @@ node packages/plugin/scripts/build-plugin.mjs --check    # parse + validate only
 
 The build bakes the **connector URL** into `.mcp.json` (claude.ai doesn't honor a plugin `userConfig` variable, so the URL is fixed at build time). The deploy passes the operator's `--mcp-url` and a `--version` (the data repo's commit count — monotonic per operator, which is what claude.ai's strictly-greater auto-update gate needs); a local build without `--mcp-url` uses a placeholder and warns. The bundle is **generated** — never hand-edit it; edit `AGENT_INSTRUCTIONS.md`.
 
-## Building the authoring vault (`vault-template/` + `src/vocab.js` → `vault/`)
-
-The Obsidian authoring vault is generated like the plugin. After editing `vault-template/` **or `src/vocab.js`** (the dropdown options come from the vocab), regenerate the committed vault:
-
-```bash
-aubr build:vault           # → vault/ (config + pinned plugin manifests)
-aubr build:vault -- --check   # validate-only: fail on drift vs vault-template/ + src/vocab.js (the CI gate)
-```
-
-`vault/` is committed and **generated — never hand-edit it**; edit `vault-template/` (or the vocab) and rebuild. The drift gate is **offline**: the Metadata Menu `recipe` fileClass dropdowns are derived from `src/vocab.js`, so a vocab change that isn't rebuilt fails CI's `build-vault --check` — the same discipline as the plugin build, and what keeps the editing-time constraint in lockstep with the server validator. The three pinned community plugins (Metadata Menu / Templater / Remotely Save) are **not** committed as binaries: `node scripts/build-vault.mjs --fetch-plugins` downloads them from the versions pinned in `vault-template/plugin-pins.json`, verifies each sha256, and lays them into `vault/` to produce the openable distributable. Bumping a plugin means updating the pin (version + embedded manifest + asset sha256), then `aubr build:vault` + commit.
-
 ## Tool & skill surfaces — what goes where
 
 The plugin ships **both** the generated skills (from `AGENT_INSTRUCTIONS.md`) and the MCP tool descriptions (`src/`), and both reach the agent at runtime. Keep each fact in exactly one home:
@@ -197,6 +185,6 @@ openspec validate "<name>"          # validate artifacts
 ## Conventions
 
 - Match the surrounding code's idiom, naming, and comment density.
-- Config/structured files use **TOML**; prose files (recipes, taste, diet_principles, the instruction docs) stay **markdown**; recipe frontmatter is **YAML** (Obsidian renders it).
+- Config/structured files use **TOML**; prose files (recipes, taste, diet_principles, the instruction docs) stay **markdown**; recipe frontmatter is **YAML**.
 - **Don't commit secrets.** The repo is public — anything needed to run that's gitignored gets documented in `README.md` / `.dev.vars.example`.
 - Keep the docs honest: a tool change updates `docs/TOOLS.md`; a schema change updates `docs/SCHEMAS.md`; an architectural shift updates `docs/ARCHITECTURE.md`. The contract is the docs *and* the code — don't let them drift.

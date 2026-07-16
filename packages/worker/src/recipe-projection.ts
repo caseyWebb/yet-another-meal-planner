@@ -6,7 +6,7 @@
 // The index is a deterministic, Worker-owned rebuild from R2.
 //
 // A recipe that fails validation is SKIPPED (not projected) and recorded to the D1
-// `reconcile_errors` table, so a malformed human/Obsidian edit is observable
+// `reconcile_errors` table, so a malformed human edit is observable
 // (agent-readable record + `/health` + an ntfy push) instead of silently dropped.
 // Projection is eventual (cron-driven), consistent with the system's accepted
 // eventual-consistency.

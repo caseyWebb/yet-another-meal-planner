@@ -123,7 +123,7 @@
 	// R2 (authored corpus). `CORPUS` holds the human-authored markdown — `recipes/*.md`
 	// and `guidance/**/*.md` — read/listed/written through src/corpus-store.ts. This is
 	// the source of truth for corpus content (the GitHub App data path is gone). Authors
-	// edit a vault synced to this same bucket via Obsidian (S3-compatible). Code-level
+	// edit this same bucket with any S3-compatible client. Code-level
 	// binding: the deploy merge propagates it (merge-wrangler-config.mjs allowlist) like
 	// `ai`/`assets` — the `bucket_name` is account-unique but carries no operator-owned
 	// secret, and each operator provisions its own bucket of that name in their account.

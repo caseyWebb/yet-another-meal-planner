@@ -3,7 +3,7 @@
 -- R2 corpus (src/recipe-projection.ts), replacing the retired CI build. A recipe that
 -- fails validation (required-field/vocabulary contract, missing body sections, duplicate
 -- slug, or a dangling `pairs_with`) is NOT projected and is recorded here, so a malformed
--- human/Obsidian edit is observable — surfaced via `/health`, an agent-readable read path
+-- human edit is observable — surfaced via `/health`, an agent-readable read path
 -- (`read_reconcile_errors`), and an ntfy push — instead of silently dropped. This is the
 -- eventual-feedback model that replaces red CI (design Decision 3).
 --

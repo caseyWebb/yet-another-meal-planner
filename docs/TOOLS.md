@@ -625,7 +625,7 @@ One fused read over the shared, curated `guidance/` trees, organized by **domain
 - **`cooking_techniques`** — general cooking-technique memories keyed by **technique** (`browning-meat`, `searing`, `resting-meat`, …).
 - **`purchasing`** — buy-side selection advice keyed by **product/item** (`canned-tomatoes`, `olive-oil`, …): *what kind to get* plus the non-obvious *how to tell if it's good/ripe* judgments.
 
-All three domains are **operator-curated** — hand-edits to the guidance tree in the vault (the Obsidian vault synced to the R2 corpus); the admin panel's Data › Guidance area is a read-only viewer. There is no `save_guidance` tool: a member who posts an article or a buying guide gets conversational use of it, not a corpus write; an operator who wants it distilled into the corpus edits the vault (one file per slug — refining overwrites, never appends).
+All three domains are **operator-curated** — hand-edits to the guidance tree in the R2 corpus (via any S3-compatible client); the admin panel's Data › Guidance area is a read-only viewer. There is no `save_guidance` tool: a member who posts an article or a buying guide gets conversational use of it, not a corpus write; an operator who wants it distilled into the corpus edits it directly (one file per slug — refining overwrites, never appends).
 
 The agent maps a just-bought item, a recipe step, or a thing on the grocery list to the right slug with its own world knowledge over the semantic slugs (no manifest); over-fetching is harmless. See `docs/SCHEMAS.md` for the trees and the AGENT_INSTRUCTIONS put-away/cook/shop/capture rules for when these fire.
 
@@ -953,7 +953,7 @@ Behind the per-tenant gate; a pure D1 write — no GitHub. Driven by the agent's
 
 ## What this surface deliberately does NOT include
 
-- No raw corpus write access — recipe **editing** is not on the member surface at all (the member web app owns member edits; `import_recipe` is create-only; the operator merge screen owns fold/tombstone). Guidance writes are entirely operator-curated (vault edits; the admin panel only views the tree) — there is no `save_guidance` tool for any domain.
+- No raw corpus write access — recipe **editing** is not on the member surface at all (the member web app owns member edits; `import_recipe` is create-only; the operator merge screen owns fold/tombstone). Guidance writes are entirely operator-curated (direct corpus edits; the admin panel only views the tree) — there is no `save_guidance` tool for any domain.
 - No raw Kroger API access (the matching pipeline + cart write only); the matcher core (`matchIngredient`) and the unit-price core (`compareUnitPrice`) are pipeline-internal, reached only through `place_order`'s resolution and the order-review widget's app ops — neither is a model-advertised tool.
 - No "search arbitrary text across recipes" (use `search_recipes` over the index).
 - No "execute arbitrary code" or "run arbitrary script".

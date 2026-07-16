@@ -8,11 +8,11 @@ Defines the Cloudflare D1 storage tier and its access discipline: D1 (`env.DB`) 
 
 The Worker SHALL bind a Cloudflare D1 database as `DB` (`env.DB`). D1 is the storage tier for domain and operational data — data that is queried, related, admin-editable, or requires read-after-write consistency. The three-tier boundary is:
 
-- **R2** holds authored recipe + guidance markdown (`recipes/*.md`, `guidance/**/*.md`) — the source of truth for human-authored corpus content, hand-edited via Obsidian (S3-compatible sync) or other file tooling. The Worker SHALL bind the R2 bucket and read/list/write the corpus through it; there is no GitHub App or installation token on the data path. (Git history for the corpus is not retained; this is a deliberate trade.)
+- **R2** holds authored recipe + guidance markdown (`recipes/*.md`, `guidance/**/*.md`) — the source of truth for human-authored corpus content, hand-edited via any S3-compatible file tool (e.g. `rclone`). The Worker SHALL bind the R2 bucket and read/list/write the corpus through it; there is no GitHub App or installation token on the data path. (Git history for the corpus is not retained; this is a deliberate trade.)
 - **D1** holds all domain/operational data and derived projections (recipe index, profile, session state, cooking log, shared corpus, attributed notes, registries, config, caches).
 - **KV** holds ephemeral infrastructure only (`KROGER_KV`: tokens, PKCE verifiers, TTL flyer cache, background-job health; `OAUTH_KV`: provider state; `TENANT_KV`: directory/invites). No domain data lives in KV; the Worker binds only `KROGER_KV`, `TENANT_KV`, and `OAUTH_KV`.
 
-Authored markdown SHALL NOT be stored in D1 — D1 is the relational/derived tier, and a file-based editor (Obsidian) has no interface to a D1 row; the corpus is files, in R2.
+Authored markdown SHALL NOT be stored in D1 — D1 is the relational/derived tier, and a file-based editor has no interface to a D1 row; the corpus is files, in R2.
 
 #### Scenario: Worker binds D1 and R2
 

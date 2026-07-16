@@ -259,8 +259,8 @@ export interface Env {
    * The authored-corpus R2 bucket: the `recipes/` and `guidance/` markdown trees, the
    * source of truth for human-authored content (r2-corpus-store). The Worker
    * reads/lists/writes the corpus through `src/corpus-store.ts` (createR2CorpusStore) —
-   * there is no GitHub App or installation token on the data path. Hand-edited via
-   * Obsidian (S3-compatible sync to the same bucket). Code-level binding propagated by
+   * there is no GitHub App or installation token on the data path. Hand-edited with
+   * any S3-compatible client synced to the same bucket. Code-level binding propagated by
    * the deploy merge; the bucket itself is provisioned per operator in their own
    * Cloudflare account.
    */

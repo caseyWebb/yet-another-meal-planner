@@ -37,8 +37,7 @@
     "build:plugin": "aube --filter @yamp/plugin run build:plugin",
     "build:admin": "aube --filter @yamp/admin-app run build",
     "build:app": "aube --filter @yamp/app run build",
-    "build:widgets": "aube --filter @yamp/widgets run build",
-    "build:vault": "aube --filter @yamp/worker run build:vault"
+    "build:widgets": "aube --filter @yamp/widgets run build"
   },
   "devDependencies": {
     "@fission-ai/openspec": "^1.4.1"

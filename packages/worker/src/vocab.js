@@ -75,26 +75,3 @@ export const EQUIPMENT_VOCAB = Object.freeze([
   "blender",
   "ice-cream-maker",
 ]);
-
-// The `course` facet is OPEN (shape-validated only — the contract never checks it
-// against a set, see src/recipe-contract.js / docs/ARCHITECTURE.md), so this is a
-// SUGGESTION list, NOT a controlled vocabulary: it seeds the authoring vault's
-// `course` dropdown (scripts/build-vault.mjs) with the conventional values while the
-// field stays open (an author may still type a new course). Because nothing enforces
-// it, adding/removing an entry only changes the vault's offered options — it never
-// rejects a recipe. Kept here so the vault generates ALL its dropdown options from one
-// module; do not wire it into validateRecipeContract (that would make `course` closed).
-export const COURSE_SUGGESTIONS = Object.freeze([
-  "main",
-  "side",
-  "breakfast",
-  "lunch",
-  "dessert",
-  "snack",
-  "appetizer",
-  "soup",
-  "salad",
-  "sauce",
-  "drink",
-  "component",
-]);

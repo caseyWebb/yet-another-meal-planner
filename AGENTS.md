@@ -46,7 +46,6 @@ aubr test:app
 aubr build:plugin
 aubr build:admin
 aubr build:app
-aubr build:vault
 aubr dev:app
 aubr dev:admin
 ```
@@ -58,9 +57,6 @@ Local dev secrets live in `.dev.vars` (gitignored; see `.dev.vars.example`). Loc
 The operator admin panel (`/admin`) is a React 19 SPA under `packages/admin-app/`, served by Worker-first `/admin*` dispatch. Its Worker routes live under `packages/worker/src/admin/`; its modeling standards live in `packages/worker/src/admin/CLAUDE.md`.
 
 The member web app (`/`) is a React 19 SPA under `packages/app/`, using Vite, TanStack Router/Query, `vite-plugin-pwa`, and shared `packages/ui` primitives. It signs in with invite-code-backed sessions and talks to typed `/api` Hono sub-apps.
-
-The authoring vault is generated from `vault-template/` by `packages/worker/scripts/build-vault.mjs`; never hand-edit generated `vault/` output.
-
 ## Architecture
 
 The LLM does fuzzy work; deterministic behavior is plain code inside Worker tools. The system is Claude.ai or another assistant for reasoning, a stateless Cloudflare Worker for OAuth/MCP/deterministic orchestration, R2 for authored recipe/guidance markdown, D1 for relational and derived state, and KV for ephemeral infrastructure.

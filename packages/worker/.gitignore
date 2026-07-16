@@ -16,10 +16,5 @@ app/visual/.results/
 # committed and never published as a CI artifact.
 app/visual/.auth/
 
-# Authoring vault: vendored community-plugin binaries (fetched on demand, sha256-verified),
-# and the packaged distributable zip — kept out of the repo.
-vault/.obsidian/plugins/*/main.js
-vault/.obsidian/plugins/*/styles.css
-grocery-authoring-vault*.zip
 admin/visual/.screenshots/
 app/visual/.screenshots/

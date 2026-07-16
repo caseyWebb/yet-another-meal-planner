@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { PROTEIN_VOCAB, CUISINE_VOCAB, EQUIPMENT_VOCAB, COURSE_SUGGESTIONS } from "../src/vocab.js";
+import { PROTEIN_VOCAB, CUISINE_VOCAB, EQUIPMENT_VOCAB } from "../src/vocab.js";
 import { EQUIPMENT_VOCAB as KITCHEN_EQUIPMENT_VOCAB } from "../src/kitchen.js";
 
 // The Worker validator (src/validate.ts), the kitchen logic (src/kitchen.ts), and
@@ -17,14 +17,6 @@ describe("controlled vocabularies (single source of truth)", () => {
     expect(CUISINE_VOCAB).toContain("thai");
     expect(EQUIPMENT_VOCAB).toContain("blender");
     expect(EQUIPMENT_VOCAB).not.toContain("air-fryer");
-  });
-
-  it("the open course suggestion list offers the conventional values, component included", () => {
-    // A SUGGESTION list, not a controlled vocabulary (course stays open) — it seeds the
-    // vault's dropdown, so the sub-recipe bucket must be offerable as a Tier-B override.
-    expect(COURSE_SUGGESTIONS).toContain("main");
-    expect(COURSE_SUGGESTIONS).toContain("side");
-    expect(COURSE_SUGGESTIONS).toContain("component");
   });
 
   it("kitchen re-exports the shared EQUIPMENT_VOCAB (no second copy)", () => {

@@ -83,15 +83,6 @@ jobs:
         working-directory: packages/plugin
         run: node scripts/build-plugin.mjs --check
 
-      - name: Authoring vault is current with src/vocab.js
-        # The committed vault/ is generated from vault-template/ + src/vocab.js — its
-        # Metadata Menu dropdowns ARE the vocabulary, so this gate proves the authoring
-        # constraints can't drift from the server validator. Offline by design (the
-        # vendored plugin binaries are fetched separately, never committed), so --check
-        # needs no network — same drift discipline as the plugin/admin builds.
-        working-directory: packages/worker
-        run: node scripts/build-vault.mjs --check
-
       - name: Dependency licenses are AGPL-3.0-compatible
         # The deployed Worker bundles its PRODUCTION deps, so each must carry a license an
         # AGPL-3.0 work may redistribute (open-source-license). Fails on an unknown or

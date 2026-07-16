@@ -15,15 +15,6 @@ build/
 # committed copy isn't reproducible across machines. Ignored by the worker package's
 # own .gitignore (assets/); the SPA's hashed chunks land under assets/assets/.
 
-# Authoring vault: the committed vault/ holds the generated config + pinned plugin
-# manifests, but the heavy plugin bundles are vendored on demand by
-# `build-vault --fetch-plugins` (sha256-verified from vault-template/plugin-pins.json)
-# — keep the multi-MB third-party binaries out of the public repo.
-vault/.obsidian/plugins/*/main.js
-vault/.obsidian/plugins/*/styles.css
-# Packaged distributable (the zip an author downloads).
-grocery-authoring-vault*.zip
-
 # Playwright (the admin-ui + app-ui harnesses): run outputs, the HTML report, and the
 # per-area review screenshots are artifacts — no pixel baselines are committed (the CI
 # gates are functional; screenshots are published on UI PRs — see admin/visual/README.md).
