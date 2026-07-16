@@ -38,6 +38,12 @@ describe("show-me routing lives in the tool descriptions", () => {
     expect(d.get("read_recipe")).toMatch(/display_recipe/);
   });
 
+  it("the planning engine points a member-initiated ask at its widget twin", async () => {
+    const d = await descriptions();
+    expect(d.get("propose_meal_plan")).toMatch(/Agent-internal planning engine/);
+    expect(d.get("propose_meal_plan")).toMatch(/render display_meal_plan instead/);
+  });
+
   it("read_meal_plan disambiguates the saved plan from the propose widget", async () => {
     const d = await descriptions();
     expect(d.get("read_meal_plan")).toMatch(/saved plan's source of truth/);
