@@ -31,7 +31,8 @@ describe("signup: cap enforcement", () => {
     const { env } = sqliteEnv();
     const { code } = await mint(env, 3);
 
-    const names = ["u1", "u2", "u3", "u4", "u5", "u6"];
+    // 3+ chars — every NEW mint validates the product handle grammar.
+    const names = ["usr1", "usr2", "usr3", "usr4", "usr5", "usr6"];
     const results = await Promise.all(names.map((n) => redeemGroupCode(env, code, n, NOW)));
     const ok = results.filter((r) => r.kind === "ok").length;
 
@@ -50,6 +51,10 @@ describe("signup: username claim + slot accounting", () => {
     expect(await env.TENANT_KV.get("tenant:dave")).toBe(JSON.stringify({ id: "dave" }));
     expect(rows<{ id: string; via_code: string }>("tenants")).toContainEqual(
       expect.objectContaining({ id: "dave", via_code: code }),
+    );
+    // The founding member is minted in the same flow: id = handle = the claimed username.
+    expect(rows("members")).toContainEqual(
+      expect.objectContaining({ id: "dave", tenant: "dave", handle: "dave" }),
     );
   });
 

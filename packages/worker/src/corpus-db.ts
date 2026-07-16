@@ -8,11 +8,15 @@
 // TOML these artifacts used to live in; after this slice GitHub holds only recipes/*.md.
 //
 // Most tables are GLOBAL shared config (no tenant column). The two attributed kinds
-// (store_notes, recipe_notes) carry an `author` (the writing tenant) + a `private`
-// flag; the read filters apply own-private + group-shared (private=0 OR author=?).
+// (store_notes, recipe_notes) carry an `author` (the writing member's id). Store notes
+// keep the binary `private` flag (own-private + group-shared: private=0 OR author=?);
+// recipe notes carry a visibility `tier` (public | friends | private, D30-final) whose
+// read predicate consumes the lens module's friend seam — see the Notes section below.
 
 import type { Env } from "./env.js";
 import { db, type Db } from "./db.js";
+import { loadDeploymentProfile } from "./deployment.js";
+import { friendHouseholds } from "./visibility.js";
 import { canonicalizeUrl, isPublicHttpUrl } from "./url.js";
 import { ToolError } from "./errors.js";
 import type { CachedMapping } from "./matching.js";
@@ -2061,19 +2065,46 @@ export interface AttributedNote {
   private: boolean;
 }
 
+/** A recipe-note visibility tier (note-visibility-tiers, D30-final). `tier` is the
+ *  source of truth; the legacy `private` column is dual-written for rollback safety. */
+export type NoteTier = "public" | "friends" | "private";
+
+/** A recipe note in the tiered read shape: tier + the author's handle (joined from
+ *  `members`, falling back to the author id — founding handles ARE tenant ids).
+ *  `private` is DERIVED (`tier === 'private'`), kept one band for stale readers. */
+export interface TieredNote extends AttributedNote {
+  handle: string;
+  tier: NoteTier;
+}
+
 /** A note as the caller owns it (used by update/remove, addressed by created_at). */
 export interface OwnedNote extends AttributedNote {
   id: string;
+  /** Effective tier (recipe notes; null for store notes, which are not tiered). */
+  tier: NoteTier | null;
 }
 
 type NoteTable = "recipe_notes" | "store_notes";
 const noteSubjectCol = (table: NoteTable): "recipe" | "store" =>
   table === "recipe_notes" ? "recipe" : "store";
 
+/**
+ * The effective-tier SQL expression: NULL tiers (rows written by pre-tier code during
+ * a rollback window) heal on the fly via the SAME mapping the 0061 backfill applies,
+ * so an unmigrated row behaves identically to its migrated form (converge organically).
+ */
+const EFF_TIER = "COALESCE(n.tier, CASE WHEN n.private = 1 THEN 'private' ELSE 'friends' END)";
+
+/** The JS mirror of `EFF_TIER` for rows read without the alias (findOwnNote on legacy
+ *  rows, simulated D1 fakes that return raw columns). */
+function effectiveTier(r: { tier?: string | null; private: number | null }): NoteTier {
+  if (r.tier === "public" || r.tier === "friends" || r.tier === "private") return r.tier;
+  return r.private === 1 ? "private" : "friends";
+}
+
 function attributedNoteOf(r: {
   author: string;
   created_at: string | null;
-  updated_at?: string | null;
   body: string;
   tags: string | null;
   private: number | null;
@@ -2087,18 +2118,105 @@ function attributedNoteOf(r: {
   };
 }
 
+interface TieredNoteRow {
+  author: string;
+  handle: string | null;
+  created_at: string | null;
+  body: string;
+  tags: string | null;
+  private: number | null;
+  tier: string | null;
+}
+
+function tieredNoteOf(r: TieredNoteRow): TieredNote {
+  const tier = effectiveTier(r);
+  return {
+    author: r.author,
+    handle: r.handle ?? r.author,
+    created_at: r.created_at ?? "",
+    body: r.body,
+    tags: parseJsonArray(r.tags),
+    tier,
+    // Derived, deprecated: consistent with the tier even on a NULL-tier rollback row.
+    private: tier === "private",
+  };
+}
+
+function byCreatedAt(a: AttributedNote, b: AttributedNote): number {
+  return a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : a.author < b.author ? -1 : 1;
+}
+
 /**
- * Read a subject's group notes with the privacy rule applied: the caller's own
- * private notes plus everyone's shared notes (private=0 OR author=caller). Ordered
- * by created_at (author as tiebreak) for determinism.
+ * Read a recipe's notes for a MEMBER viewer under the tier rules (recipe-notes,
+ * D30-final), in ONE query joined against `members` (the join row supplies both the
+ * author's handle and the author's household for the friends arm):
+ *
+ *   - own notes (`author = member`), every tier;
+ *   - `public` notes — anyone who can see the recipe sees them (the recipe's own lens
+ *     is enforced UPSTREAM by the callers' `isVisible` gate, never here);
+ *   - `friends` notes whose author's household is the viewer's own or joined to it by
+ *     the lens module's friend seam (`friendHouseholds`) — under the self-hosted
+ *     profile the implicit all-to-all graph admits every member, byte-equivalent to
+ *     the pre-tier shared read.
+ *
+ * Another member's `private` note never leaves D1. Visibility is computed per read
+ * over the live `friendships` rows and the live `tier` column — retroactive in both
+ * directions with no materialized state. Ordered by created_at (author tiebreak).
  */
-async function readNotes(
+export async function readRecipeNotes(
   env: Env,
-  table: NoteTable,
-  subject: string,
-  caller: string,
-): Promise<AttributedNote[]> {
-  const col = noteSubjectCol(table);
+  recipe: string,
+  viewer: { member: string; tenant: string },
+): Promise<TieredNote[]> {
+  const profile = await loadDeploymentProfile(env);
+  const friendsArm: string[] = [];
+  const binds: unknown[] = [recipe, viewer.member];
+  if (profile === "self-hosted") {
+    // Implicit all-to-all (D9): every member is inside the friends tier.
+    friendsArm.push("1 = 1");
+  } else {
+    friendsArm.push("m.tenant = ?3");
+    binds.push(viewer.tenant);
+    const friends = await friendHouseholds(env, viewer.tenant);
+    if (friends.length > 0) {
+      friendsArm.push(`m.tenant IN (${friends.map((_, i) => `?${i + 4}`).join(", ")})`);
+      binds.push(...friends);
+    }
+  }
+  const rows = await db(env).all<TieredNoteRow>(
+    "SELECT n.author AS author, COALESCE(m.handle, n.author) AS handle, n.created_at AS created_at, " +
+      `n.body AS body, n.tags AS tags, n.private AS private, ${EFF_TIER} AS tier ` +
+      "FROM recipe_notes n LEFT JOIN members m ON m.id = n.author " +
+      `WHERE n.recipe = ?1 AND (n.author = ?2 OR ${EFF_TIER} = 'public' ` +
+      `OR (${EFF_TIER} = 'friends' AND (${friendsArm.join(" OR ")})))`,
+    ...binds,
+  );
+  return rows.map(tieredNoteOf).sort(byCreatedAt);
+}
+
+/**
+ * The ANONYMOUS notes read (the public /cookbook recipe page): exactly the
+ * `public`-tier notes, tier-scoped IN SQL so no other tier's content ever leaves D1
+ * for the anonymous surface. The recipe's own anonymous visibility is enforced
+ * upstream (`isVisible(ANONYMOUS)` — the page 404s before this read).
+ */
+export async function readPublicRecipeNotes(env: Env, recipe: string): Promise<TieredNote[]> {
+  const rows = await db(env).all<TieredNoteRow>(
+    "SELECT n.author AS author, COALESCE(m.handle, n.author) AS handle, n.created_at AS created_at, " +
+      `n.body AS body, n.tags AS tags, n.private AS private, ${EFF_TIER} AS tier ` +
+      "FROM recipe_notes n LEFT JOIN members m ON m.id = n.author " +
+      `WHERE n.recipe = ?1 AND ${EFF_TIER} = 'public'`,
+    recipe,
+  );
+  return rows.map(tieredNoteOf).sort(byCreatedAt);
+}
+
+/**
+ * Read a store's group notes with the binary privacy rule (store notes are NOT
+ * tiered — a household-scoped surface): the caller's own private notes plus
+ * everyone's shared notes. Ordered by created_at (author tiebreak).
+ */
+export async function readStoreNotes(env: Env, store: string, caller: string): Promise<AttributedNote[]> {
   const rows = await db(env).all<{
     author: string;
     created_at: string | null;
@@ -2107,38 +2225,55 @@ async function readNotes(
     tags: string | null;
     private: number | null;
   }>(
-    `SELECT author, body, tags, private, created_at${table === "store_notes" ? ", updated_at" : ", NULL AS updated_at"} FROM ${table} ` +
-      `WHERE ${col} = ?1 AND (private = 0 OR author = ?2)`,
-    subject,
+    "SELECT author, body, tags, private, created_at, updated_at FROM store_notes " +
+      "WHERE store = ?1 AND (private = 0 OR author = ?2)",
+    store,
     caller,
   );
-  const notes = rows.map(attributedNoteOf);
-  notes.sort((a, b) =>
-    a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : a.author < b.author ? -1 : 1,
-  );
-  return notes;
+  return rows.map(attributedNoteOf).sort(byCreatedAt);
 }
 
-export const readRecipeNotes = (env: Env, recipe: string, caller: string) =>
-  readNotes(env, "recipe_notes", recipe, caller);
-export const readStoreNotes = (env: Env, store: string, caller: string) =>
-  readNotes(env, "store_notes", store, caller);
-
-/** Insert an attributed note; returns its id (the addressing key for update/remove). */
-async function insertNote(
+/**
+ * Insert a recipe note; returns its id (the addressing key for update/remove).
+ * DUAL-WRITE (rollback safety, note-visibility-tiers): `tier` is the source of truth
+ * and `private` is set to `tier = 'private'` in the same INSERT, so a rolled-back
+ * Worker reading only `private` never widens a private note's audience.
+ */
+export async function insertRecipeNote(
   env: Env,
-  table: NoteTable,
-  subject: string,
+  recipe: string,
+  author: string,
+  note: { created_at: string; body: string; tags: string[]; tier: NoteTier },
+): Promise<string> {
+  const id = `${author} ${recipe} ${note.created_at}`;
+  await db(env).run(
+    "INSERT INTO recipe_notes (id, recipe, author, body, tags, private, created_at, tier) " +
+      "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+    id,
+    recipe,
+    author,
+    note.body,
+    JSON.stringify(note.tags),
+    note.tier === "private" ? 1 : 0,
+    note.created_at,
+    note.tier,
+  );
+  return id;
+}
+
+/** Insert a store note (binary private flag — store notes are not tiered). */
+export async function insertStoreNote(
+  env: Env,
+  store: string,
   author: string,
   note: { created_at: string; body: string; tags: string[]; private: boolean },
 ): Promise<string> {
-  const col = noteSubjectCol(table);
-  const id = `${author} ${subject} ${note.created_at}`;
+  const id = `${author} ${store} ${note.created_at}`;
   await db(env).run(
-    `INSERT INTO ${table} (id, ${col}, author, body, tags, private, created_at${table === "store_notes" ? ", updated_at" : ""}) ` +
-      `VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7${table === "store_notes" ? ", ?7" : ""})`,
+    "INSERT INTO store_notes (id, store, author, body, tags, private, created_at, updated_at) " +
+      "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
     id,
-    subject,
+    store,
     author,
     note.body,
     JSON.stringify(note.tags),
@@ -2147,19 +2282,6 @@ async function insertNote(
   );
   return id;
 }
-
-export const insertRecipeNote = (
-  env: Env,
-  recipe: string,
-  author: string,
-  note: { created_at: string; body: string; tags: string[]; private: boolean },
-) => insertNote(env, "recipe_notes", recipe, author, note);
-export const insertStoreNote = (
-  env: Env,
-  store: string,
-  author: string,
-  note: { created_at: string; body: string; tags: string[]; private: boolean },
-) => insertNote(env, "store_notes", store, author, note);
 
 /**
  * Find the caller's OWN note on a subject by created_at (self-scoped — only the
@@ -2178,44 +2300,65 @@ async function findOwnNote(
     id: string;
     author: string;
     created_at: string | null;
-    updated_at: string | null;
     body: string;
     tags: string | null;
     private: number | null;
+    tier: string | null;
   }>(
-    `SELECT id, author, body, tags, private, created_at${table === "store_notes" ? ", updated_at" : ", NULL AS updated_at"} FROM ${table} ` +
+    `SELECT id, author, body, tags, private, created_at${table === "recipe_notes" ? ", tier" : ", NULL AS tier"} FROM ${table} ` +
       `WHERE ${col} = ?1 AND author = ?2 AND created_at = ?3`,
     subject,
     author,
     createdAt,
   );
   if (!row) return null;
-  return { id: row.id, ...attributedNoteOf(row) };
+  return {
+    id: row.id,
+    ...attributedNoteOf(row),
+    tier: table === "recipe_notes" ? effectiveTier(row) : null,
+  };
 }
 
-/** Patch fields on the caller's own note (by created_at). Returns false when no match. */
+/**
+ * Patch fields on the caller's own note (by created_at). Returns the note's resulting
+ * effective tier (recipe notes; null for store notes), or undefined when no row of the
+ * caller's matches. Recipe notes DUAL-WRITE tier + private (see insertRecipeNote); a
+ * NULL-tier rollback-window row heals to its mapped tier on its first patch.
+ */
 async function updateOwnNote(
   env: Env,
   table: NoteTable,
   subject: string,
   author: string,
   createdAt: string,
-  patch: { body?: string; tags?: string[]; private?: boolean },
-): Promise<boolean> {
+  patch: { body?: string; tags?: string[]; private?: boolean; tier?: NoteTier },
+): Promise<NoteTier | null | undefined> {
   const existing = await findOwnNote(env, table, subject, author, createdAt);
-  if (!existing) return false;
+  if (!existing) return undefined;
   const body = patch.body ?? existing.body;
   const tags = patch.tags ?? existing.tags;
+  if (table === "recipe_notes") {
+    const tier = patch.tier ?? existing.tier ?? "friends";
+    await db(env).run(
+      "UPDATE recipe_notes SET body = ?1, tags = ?2, private = ?3, tier = ?5 WHERE id = ?4",
+      body,
+      JSON.stringify(tags),
+      tier === "private" ? 1 : 0,
+      existing.id,
+      tier,
+    );
+    return tier;
+  }
   const priv = patch.private ?? existing.private;
   await db(env).run(
-    `UPDATE ${table} SET body = ?1, tags = ?2, private = ?3${table === "store_notes" ? ", updated_at = ?5" : ""} WHERE id = ?4`,
+    "UPDATE store_notes SET body = ?1, tags = ?2, private = ?3, updated_at = ?5 WHERE id = ?4",
     body,
     JSON.stringify(tags),
     priv ? 1 : 0,
     existing.id,
-    ...(table === "store_notes" ? [new Date().toISOString()] : []),
+    new Date().toISOString(),
   );
-  return true;
+  return null;
 }
 
 /** Delete the caller's own note (by created_at). Returns false when no match. */
@@ -2232,21 +2375,33 @@ async function removeOwnNote(
   return true;
 }
 
-export const updateRecipeNote = (
+/** Patch the caller's own recipe note; passing `tier` re-tiers it (the one tier-change
+ *  surface). Returns the note's resulting tier, or null when no row of the caller's
+ *  matches (not_found). */
+export const updateRecipeNote = async (
   env: Env,
   recipe: string,
   author: string,
   createdAt: string,
-  patch: { body?: string; tags?: string[]; private?: boolean },
-) => updateOwnNote(env, "recipe_notes", recipe, author, createdAt, patch);
+  patch: { body?: string; tags?: string[]; tier?: NoteTier },
+): Promise<NoteTier | null> =>
+  (await updateOwnNote(env, "recipe_notes", recipe, author, createdAt, patch)) ?? null;
 export const removeRecipeNote = (env: Env, recipe: string, author: string, createdAt: string) =>
   removeOwnNote(env, "recipe_notes", recipe, author, createdAt);
-export const updateStoreNote = (
+/** Does the caller already own a note on `recipe` at `createdAt`? (The /api POST's
+ *  class (b) replay probe — one indexed point read, no visibility predicate needed.) */
+export const hasOwnRecipeNote = async (
+  env: Env,
+  recipe: string,
+  author: string,
+  createdAt: string,
+): Promise<boolean> => (await findOwnNote(env, "recipe_notes", recipe, author, createdAt)) !== null;
+export const updateStoreNote = async (
   env: Env,
   store: string,
   author: string,
   createdAt: string,
   patch: { body?: string; tags?: string[]; private?: boolean },
-) => updateOwnNote(env, "store_notes", store, author, createdAt, patch);
+): Promise<boolean> => (await updateOwnNote(env, "store_notes", store, author, createdAt, patch)) !== undefined;
 export const removeStoreNote = (env: Env, store: string, author: string, createdAt: string) =>
   removeOwnNote(env, "store_notes", store, author, createdAt);

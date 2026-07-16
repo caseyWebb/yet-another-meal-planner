@@ -69,6 +69,7 @@ export const DEFINED_PREFERENCE_KEYS = [
   "brands",
   "dietary",
   "rotation",
+  "curated_hide",
   "custom",
 ] as const;
 
@@ -238,6 +239,12 @@ export function validatePreferences(merged: Record<string, unknown>): void {
     const v = merged.planning_cadence_days;
     if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) {
       fail(`planning_cadence_days must be a positive number (got ${JSON.stringify(v)})`);
+    }
+  }
+  if ("curated_hide" in merged) {
+    const v = merged.curated_hide;
+    if (typeof v !== "boolean") {
+      fail(`curated_hide must be a boolean (got ${JSON.stringify(v)}) — true hides the curated tier for the whole household`);
     }
   }
   if ("weekly_budget" in merged) {

@@ -30,10 +30,12 @@ import { Marked } from "marked";
 import type { Env } from "./env.js";
 import { ToolError } from "./errors.js";
 import { loadRecipeIndex, loadRecipeEmbeddings } from "./recipe-index.js";
+import { ANONYMOUS, isVisible } from "./visibility.js";
 import { createR2CorpusStore } from "./corpus-store.js";
 import { parseMarkdown } from "./parse.js";
 import { rankByKeyword, toHit, type CookbookHit } from "./cookbook-search.js";
 import { nearestNeighbors } from "./cookbook-similar.js";
+import { readPublicRecipeNotes } from "./corpus-db.js";
 import type { IndexedRecipe } from "./recipes.js";
 
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -102,6 +104,11 @@ form.search input[type=search]{flex:1;min-width:0;padding:.4rem .6rem;font-size:
 form.search button{padding:.4rem .9rem;font-size:1rem;cursor:pointer}
 section.similar{margin-top:2rem;border-top:1px solid #e5e7eb;padding-top:.5rem}
 section.similar h2{font-size:1.1rem;margin-bottom:.25rem}
+section.pubnotes{margin-top:2rem;border-top:1px solid #e5e7eb;padding-top:.5rem}
+section.pubnotes h2{font-size:1.1rem;margin-bottom:.25rem}
+ul.pubnotes{list-style:none;padding:0}
+ul.pubnotes li{padding:.6rem 0;border-bottom:1px solid #e5e7eb}
+ul.pubnotes .note-body p{margin:.25rem 0}
 `;
 
 // The recipe-body page renders untrusted markdown → keep the STRICT no-script CSP.
@@ -174,9 +181,12 @@ function searchForm(q: string): string {
 </form>`;
 }
 
-/** The cookbook index: every recipe in the D1 index, titled + linked, with a short blurb. */
+/** The cookbook index: every ANONYMOUSLY-VISIBLE recipe, titled + linked, with a short
+ *  blurb. The anonymous viewer is the BOTTOM lens position (shared-corpus): the full
+ *  attached corpus under self-hosted (today's public site), exactly the curated tier
+ *  under SaaS — resolved through the shared enforcement point, never per-surface. */
 async function renderIndex(env: Env): Promise<Response> {
-  const index = await loadRecipeIndex(env);
+  const index = await loadRecipeIndex(env, ANONYMOUS);
   const recipes = Object.values(index)
     .map(toHit)
     .sort((a, b) => a.title.localeCompare(b.title) || a.slug.localeCompare(b.slug));
@@ -201,8 +211,16 @@ ${SEARCH_SCRIPT_TAG}`;
 async function renderSimilar(env: Env, slug: string): Promise<string> {
   let neighbors: CookbookHit[];
   try {
-    const [embeddings, index] = await Promise.all([loadRecipeEmbeddings(env), loadRecipeIndex(env)]);
-    neighbors = nearestNeighbors(slug, embeddings)
+    const [embeddings, index] = await Promise.all([loadRecipeEmbeddings(env), loadRecipeIndex(env, ANONYMOUS)]);
+    // Restrict the CANDIDATE SET to the anonymous lens BEFORE neighbor selection: an
+    // out-of-lens recipe must never occupy a neighbor slot, count toward the cap, or
+    // influence the rendered list (cookbook-similar-recipes) — filtering after
+    // selection would leak its existence through a shortened list.
+    const visibleEmbeddings = new Map<string, number[]>();
+    for (const [s, vec] of embeddings) {
+      if (index[s] !== undefined || s === slug) visibleEmbeddings.set(s, vec);
+    }
+    neighbors = nearestNeighbors(slug, visibleEmbeddings)
       .map((s) => index[s])
       .filter((r): r is IndexedRecipe => r != null)
       .map(toHit);
@@ -215,8 +233,36 @@ async function renderSimilar(env: Env, slug: string): Promise<string> {
 <ul class="recipes">${items}</ul></section>`;
 }
 
-/** One recipe page: its R2 body rendered to HTML, with a title + meta line from frontmatter. */
+/**
+ * The PUBLIC-tier notes section for one anonymously-visible recipe (recipe-notes,
+ * D30-final): rendered only when at least one `public` note exists — no empty-section
+ * chrome. The query is tier-scoped IN SQL (`readPublicRecipeNotes`), so friends/private
+ * rows never leave D1 for this surface, under either deployment profile; the recipe's
+ * own anonymous visibility is the caller's gate (the page 404s upstream). Each note is
+ * handle-attributed, its tags render as escaped text chips, and its BODY — member-
+ * authored, UNTRUSTED — goes through the same raw-HTML-dropping `md` renderer the
+ * recipe body uses, under the page's unchanged strict no-script CSP.
+ */
+async function renderPublicNotes(env: Env, slug: string): Promise<string> {
+  const notes = await readPublicRecipeNotes(env, slug);
+  if (notes.length === 0) return "";
+  const items: string[] = [];
+  for (const n of notes) {
+    const chips = n.tags.map((t) => `<span class="chip">${esc(t)}</span>`).join("");
+    const bodyHtml = await md.parse(n.body);
+    items.push(`<li><p class="meta">@${esc(n.handle)}${chips ? ` ${chips}` : ""}</p><div class="note-body">${bodyHtml}</div></li>`);
+  }
+  return `<section class="pubnotes"><h2>Notes</h2>
+<ul class="pubnotes">${items.join("\n")}</ul></section>`;
+}
+
+/** One recipe page: its R2 body rendered to HTML, with a title + meta line from frontmatter.
+ *  Lens-gated FIRST (one indexed point query, no body read): a recipe outside the
+ *  anonymous lens produces the byte-identical 404 a nonexistent slug produces — same
+ *  status, same page, same response class — so `/cookbook/<slug>` is never a
+ *  slug-probing oracle (shared-corpus / cookbook-search). */
 async function renderRecipe(env: Env, slug: string): Promise<Response> {
+  if (!(await isVisible(env, ANONYMOUS, slug))) return notice(404, "Recipe not found");
   const store = createR2CorpusStore(env.CORPUS);
   const text = await store.getFile(`recipes/${slug}.md`);
   if (text === null) return notice(404, "Recipe not found");
@@ -240,13 +286,16 @@ async function renderRecipe(env: Env, slug: string): Promise<Response> {
   const openInClaude = `<p><a class="cta" href="${esc(openInClaudeUrl(title, slug))}" target="_blank" rel="nofollow noopener noreferrer">👨‍🍳 Cook this with Claude</a></p>`;
   // Recipe→recipe "Similar Recipes" over the stored vectors — best-effort (no AI call), so
   // a missing embedding / D1 hiccup just omits the section rather than failing the body page.
-  const similarHtml = await renderSimilar(env, slug);
+  // Public-tier notes render below the body (the recipe is anonymously visible — the lens
+  // gate above already passed); the section is empty when no public note exists.
+  const [similarHtml, notesHtml] = await Promise.all([renderSimilar(env, slug), renderPublicNotes(env, slug)]);
   const html = `<nav><a href="/cookbook">← Cookbook</a></nav>
 <h1>${esc(title)}</h1>
 ${meta ? `<p class="meta">${meta}</p>` : ""}
 ${sourceLine}
 ${openInClaude}
 ${bodyHtml}
+${notesHtml}
 ${similarHtml}`;
   return page(title, html, CSP_STRICT);
 }
@@ -272,17 +321,20 @@ ${SEARCH_SCRIPT_TAG}`;
 }
 
 /** Server-render keyword results for a non-empty `q` (the no-JS / shareable path). Shares
- *  `rankByKeyword` with the JSON endpoint, so the two agree on ordering. */
+ *  `rankByKeyword` with the JSON endpoint, so the two agree on ordering. Candidate
+ *  membership is exactly the anonymous lens position — no query can surface, count, or
+ *  rank a recipe outside it (cookbook-search). */
 async function renderSearch(env: Env, q: string): Promise<Response> {
-  const index = await loadRecipeIndex(env);
+  const index = await loadRecipeIndex(env, ANONYMOUS);
   return searchResultsPage(q, rankByKeyword(index, q));
 }
 
 /** The JSON search endpoint the client fetches: the ranked rows for `q`, or an empty list
- *  for an empty/no-match query (always 200). */
+ *  for an empty/no-match query (always 200). Same anonymous-lens membership as the
+ *  server-rendered page. */
 async function renderSearchJson(env: Env, q: string): Promise<Response> {
   if (!q) return jsonResponse({ results: [] });
-  const index = await loadRecipeIndex(env);
+  const index = await loadRecipeIndex(env, ANONYMOUS);
   return jsonResponse({ results: rankByKeyword(index, q) });
 }
 

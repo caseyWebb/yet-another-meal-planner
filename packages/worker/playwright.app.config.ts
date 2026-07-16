@@ -23,11 +23,20 @@ import { defineConfig } from "@playwright/test";
 import { SEED } from "./admin/visual/seed.mjs";
 
 const PORT = Number(process.env.PW_APP_PORT || 8788);
+// The SaaS deployment variant's sibling server (setup.mjs seeds + spawns it over a
+// dedicated persist dir; the deployment profile is a D1 singleton, so one server is one
+// profile). The `saas` project points its baseURL here.
+const SAAS_PORT = Number(process.env.PW_APP_SAAS_PORT || 8789);
 const localChromium = process.env.PW_CHROMIUM_PATH;
 
 // The dedicated real-auth-UI specs run in the logged-out `noauth` project; every other spec
 // runs pre-authenticated in `authed`. Kept in one place so the two projects stay complements.
-const REAL_AUTH_UI_SPECS = ["**/login.spec.ts", "**/signup.spec.ts", "**/passkey.spec.ts"];
+// join.spec.ts belongs here too: `/join/:token` serves signed-out visitors (the signup fork).
+const REAL_AUTH_UI_SPECS = ["**/login.spec.ts", "**/signup.spec.ts", "**/passkey.spec.ts", "**/join.spec.ts"];
+// The SaaS-variant specs (cookbook cold-start, curated tier, browse lens, the People page's
+// full variant) run in their own project against the saas server — authed via the same
+// storageState (cookies are host-scoped, so the seeded session cookie rides on both ports).
+const SAAS_SPECS = ["**/cookbook-saas.spec.ts", "**/people-saas.spec.ts"];
 // The storageState the `authed` project loads, written by setup.mjs. Resolved relative to
 // this config's directory (packages/worker), the same cwd setup.mjs writes it from.
 const AUTHED_STORAGE_STATE = `app/visual/.auth/${SEED.members.active}.json`;
@@ -67,8 +76,18 @@ export default defineConfig({
     // Every other spec, pre-authenticated as the seeded member via storageState — no login HTTP.
     {
       name: "authed",
-      testIgnore: REAL_AUTH_UI_SPECS,
+      testIgnore: [...REAL_AUTH_UI_SPECS, ...SAAS_SPECS],
       use: { browserName: "chromium", storageState: AUTHED_STORAGE_STATE },
+    },
+    // The SaaS deployment variant, pre-authenticated the same way, against the sibling server.
+    {
+      name: "saas",
+      testMatch: SAAS_SPECS,
+      use: {
+        browserName: "chromium",
+        storageState: AUTHED_STORAGE_STATE,
+        baseURL: `http://127.0.0.1:${SAAS_PORT}`,
+      },
     },
   ],
   webServer: {
@@ -77,7 +96,7 @@ export default defineConfig({
     // Worker (not just the asset layer) is up. Long-running (wrangler dev is the server).
     command: "node app/visual/setup.mjs",
     url: `http://127.0.0.1:${PORT}/health`,
-    timeout: 240_000,
+    timeout: 360_000, // two wrangler dev servers + their D1/KV/R2 seeding boot in this window
     reuseExistingServer: !process.env.CI,
   },
 });

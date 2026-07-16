@@ -6,7 +6,9 @@
 // Node builtins and no hand-rolled crypto here.
 //
 // Discoverable (usernameless) credentials: registration sets `residentKey: "required"`
-// with the tenant id as the WebAuthn user handle, so authentication runs with an empty
+// with the MEMBER id as the WebAuthn user handle (member-identity-split — a founding
+// member's id equals the tenant id, which is exactly the handle every pre-split
+// credential already carries burned in), so authentication runs with an empty
 // `allowCredentials` and the member is resolved from the asserted credential id (looked up
 // in `webauthn_credentials`). The signature counter is stored by the caller but NEVER
 // enforced (design D4) — we do not reject on counter regression.
@@ -80,23 +82,24 @@ export interface VerifiedCredential {
 }
 
 /**
- * Build registration options for an authenticated `tenant` and stash the challenge. Discoverable
- * (`residentKey: "required"`), no attestation, user handle = tenant id. `existing` are the tenant's
- * current credentials, excluded so the authenticator won't double-register the same device.
+ * Build registration options for the authenticated session's member and stash the challenge.
+ * Discoverable (`residentKey: "required"`), no attestation, user handle = the MEMBER id
+ * (`userName`/`userDisplayName` = the member's handle). `existing` are the tenant's current
+ * credentials, excluded so the authenticator won't double-register the same device.
  */
 export async function beginRegistration(
   env: Env,
   request: Request,
-  tenant: string,
+  member: { id: string; handle: string },
   existing: StoredCredential[],
 ): Promise<PublicKeyCredentialCreationOptionsJSON> {
   const { rpID } = rpFromRequest(request);
   const options = await generateRegistrationOptions({
     rpName: RP_NAME,
     rpID,
-    userID: isoUint8Array.fromUTF8String(tenant),
-    userName: tenant,
-    userDisplayName: tenant,
+    userID: isoUint8Array.fromUTF8String(member.id),
+    userName: member.handle,
+    userDisplayName: member.handle,
     attestationType: "none",
     excludeCredentials: existing.map((c) => ({ id: c.credentialId, transports: c.transports as never })),
     authenticatorSelection: { residentKey: "required", userVerification: "preferred" },

@@ -7,6 +7,7 @@
 import { describe, it, expect } from "vitest";
 import {
   readTrending,
+  trendGuardQualifies,
   readPickedForYou,
   conflictsWithAvoids,
   favoritesCentroid,
@@ -29,6 +30,11 @@ function seedRecipe(h: SqliteEnv, slug: string, over: { protein?: string; keys?:
       over.keys ? JSON.stringify(over.keys) : null,
       over.course ? JSON.stringify(over.course) : null,
     );
+  // Attach the seeded recipe (visibility lens, migration 0059): the converged state —
+  // under the default self-hosted profile any household's grant admits every viewer.
+  h.raw
+    .prepare("INSERT OR IGNORE INTO recipe_imports (recipe, tenant, member, via, imported_at) VALUES (?, ?, ?, 'agent', '2026-01-01')")
+    .run(slug, T, T);
 }
 
 function seedCook(h: SqliteEnv, tenant: string, recipe: string, date: string): void {
@@ -136,6 +142,74 @@ describe("readTrending — the min-signal guard (D7)", () => {
     }
     const res = await readTrending(h.env, T);
     expect(res.recipes.map((r) => r.slug)).toEqual(["fresh-import", "ragu"]);
+  });
+});
+
+describe("trendGuardQualifies — the D31 profile-parameterized guard", () => {
+  const set = (...tenants: string[]) => new Set(tenants);
+
+  it("self-hosted keeps the existing guard VERBATIM (≥ 2 cooks OR ≥ 2 tenants — solo-operator alive)", () => {
+    expect(trendGuardQualifies("self-hosted", T, { cooks: 2, tenants: set(T) })).toBe(true); // the degenerate case
+    expect(trendGuardQualifies("self-hosted", T, { cooks: 1, tenants: set(T) })).toBe(false);
+    expect(trendGuardQualifies("self-hosted", T, { cooks: 2, tenants: set(T, OTHER) })).toBe(true);
+    // One cook each across two tenants qualifies on the distinct-tenant arm.
+    expect(trendGuardQualifies("self-hosted", T, { cooks: 2, tenants: set("a", "b") })).toBe(true);
+  });
+
+  it("SaaS requires ≥ 2 distinct NON-CALLER households — never 'cooked by 1 friend', never the caller alone", () => {
+    // Caller-only, any volume: the 1-household set never trends.
+    expect(trendGuardQualifies("saas", T, { cooks: 5, tenants: set(T) })).toBe(false);
+    // Exactly one friend household, even cooking repeatedly: still identifies one household.
+    expect(trendGuardQualifies("saas", T, { cooks: 3, tenants: set("friend-1") })).toBe(false);
+    expect(trendGuardQualifies("saas", T, { cooks: 4, tenants: set(T, "friend-1") })).toBe(false);
+    // Two friend households is the floor — with or without the caller in the set.
+    expect(trendGuardQualifies("saas", T, { cooks: 2, tenants: set("friend-1", "friend-2") })).toBe(true);
+    expect(trendGuardQualifies("saas", T, { cooks: 3, tenants: set(T, "friend-1", "friend-2") })).toBe(true);
+  });
+});
+
+describe("readTrending under the SaaS profile (the empty friend seam)", () => {
+  function toSaas(h: SqliteEnv): void {
+    h.raw.exec(
+      "INSERT INTO operator_config (id, deployment_profile) VALUES (1, 'saas') " +
+        "ON CONFLICT(id) DO UPDATE SET deployment_profile = 'saas'",
+    );
+  }
+
+  it("a recipe the caller cooked 3x alone does NOT trend, and the result reports profile:'saas'", async () => {
+    const h = sqliteEnv([T, OTHER]);
+    seedRecipe(h, "ragu"); // granted to the caller's household by seedRecipe → index-visible
+    seedCook(h, T, "ragu", day(2));
+    seedCook(h, T, "ragu", day(5));
+    seedCook(h, T, "ragu", day(9));
+    toSaas(h);
+    const res = await readTrending(h.env, T);
+    // Would trend self-hosted (3 cooks); under SaaS the 1-household set never qualifies.
+    expect(res.recipes).toEqual([]);
+    expect(res.profile).toBe("saas"); // the browse page's label conditioner
+  });
+
+  it("a non-lens household's cooks never enter the aggregation (would have trended self-hosted)", async () => {
+    const h = sqliteEnv([T, OTHER]);
+    seedRecipe(h, "stew");
+    // OTHER is not in the caller's lens households (the seam is empty): its cook events
+    // are excluded BEFORE the guard, so even a mixed 3-cook/2-tenant history stays empty.
+    seedCook(h, T, "stew", day(2));
+    seedCook(h, OTHER, "stew", day(3));
+    seedCook(h, OTHER, "stew", day(6));
+    expect((await readTrending(h.env, T)).recipes).toHaveLength(1); // self-hosted control
+    toSaas(h);
+    expect((await readTrending(h.env, T)).recipes).toEqual([]);
+  });
+
+  it("self-hosted continues to report its profile alongside the unchanged read", async () => {
+    const h = sqliteEnv([T, OTHER]);
+    seedRecipe(h, "tacos");
+    seedCook(h, T, "tacos", day(1));
+    seedCook(h, T, "tacos", day(4));
+    const res = await readTrending(h.env, T);
+    expect(res.profile).toBe("self-hosted");
+    expect(res.recipes[0]).toMatchObject({ slug: "tacos", cooks: 2, cooks_by: 1 });
   });
 });
 

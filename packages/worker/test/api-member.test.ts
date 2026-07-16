@@ -231,6 +231,22 @@ const MEMBER_ENDPOINTS: [string, string][] = [
   ["POST", "/api/vibes/proposals/p1/confirm"],
   ["POST", "/api/vibes/suggest"],
   ["POST", "/api/propose"],
+  // The People area (households-friends-and-people-page). `/api/join/:token` is
+  // deliberately PUBLIC (the signup fork) and is not listed here.
+  ["GET", "/api/people"],
+  ["POST", "/api/people/lookup"],
+  ["POST", "/api/people/requests"],
+  ["POST", "/api/people/requests/r1/accept"],
+  ["POST", "/api/people/requests/r1/decline"],
+  ["POST", "/api/people/requests/r1/cancel"],
+  ["POST", "/api/people/blocks"],
+  ["DELETE", "/api/people/blocks"],
+  ["DELETE", "/api/people/friends/pat"],
+  ["PUT", "/api/people/nicknames/m1"],
+  ["POST", "/api/people/invites"],
+  ["DELETE", "/api/people/invites/tok"],
+  ["POST", "/api/people/leave"],
+  ["POST", "/api/people/members/m1/remove"],
 ];
 
 describe("session gating (requireSession is PER-ROUTE — none may be forgotten)", () => {
@@ -275,7 +291,7 @@ describe("cookbook area", () => {
 
     const first = await send(env, "POST", "/api/cookbook/recipes/tacos/notes", cookie, body);
     expect(first.status).toBe(200);
-    expect(await first.json()).toEqual({ slug: "tacos", author: "casey", created_at: createdAt });
+    expect(await first.json()).toEqual({ slug: "tacos", author: "casey", created_at: createdAt, tier: "friends" });
     expect(d1.tables.recipe_notes).toHaveLength(1);
 
     const replay = await send(env, "POST", "/api/cookbook/recipes/tacos/notes", cookie, body);
@@ -287,6 +303,58 @@ describe("cookbook area", () => {
     expect(((await del.json()) as { removed: boolean }).removed).toBe(true);
     const again = await send(env, "DELETE", `/api/cookbook/recipes/tacos/notes/${encodeURIComponent(createdAt)}`, cookie);
     expect(((await again.json()) as { removed: boolean }).removed).toBe(false); // converged, not an error
+  });
+
+  it("notes: tier rides POST/PATCH (legacy alias mapped, enum enforced); GET returns tier + handle + anonymously_visible", async () => {
+    const { env, d1 } = memberEnv({ recipe_notes: [] });
+    const cookie = await loggedIn(env);
+    const t1 = "2026-07-01T12:00:00.000Z";
+    const t2 = "2026-07-01T12:01:00.000Z";
+
+    // Explicit tier round-trips; the stale-plugin alias maps private:true → 'private'.
+    const post = await send(env, "POST", "/api/cookbook/recipes/tacos/notes", cookie, { body: "public tip", created_at: t1, tier: "public" });
+    expect(((await post.json()) as { tier: string }).tier).toBe("public");
+    const alias = await send(env, "POST", "/api/cookbook/recipes/tacos/notes", cookie, { body: "just for me", created_at: t2, private: true });
+    expect(((await alias.json()) as { tier: string }).tier).toBe("private");
+    // Dual-write invariant on the stored rows: private tracks the tier.
+    expect(d1.tables.recipe_notes.map((r) => [r.tier, r.private])).toEqual([
+      ["public", 0],
+      ["private", 1],
+    ]);
+
+    // A typo'd tier is a 400, never a silently defaulted audience.
+    const bad = await send(env, "POST", "/api/cookbook/recipes/tacos/notes", cookie, { body: "x", created_at: "2026-07-01T12:02:00.000Z", tier: "household" });
+    expect(bad.status).toBe(400);
+
+    // GET: tier-shaped rows (handle falls back to the author id — no members fixture)
+    // plus the composer's anonymously_visible datum (self-hosted → on the public site).
+    const read = await get(env, "/api/cookbook/recipes/tacos/notes", cookie);
+    const data = (await read.json()) as {
+      notes: { author: string; handle: string; tier: string; private: boolean }[];
+      anonymously_visible: boolean;
+    };
+    expect(data.anonymously_visible).toBe(true);
+    expect(data.notes.map((n) => [n.author, n.handle, n.tier, n.private])).toEqual([
+      ["casey", "casey", "public", false],
+      ["casey", "casey", "private", true],
+    ]);
+
+    // PATCH re-tiers on the same idempotent note-edit write and reports the new tier.
+    const patch = await send(env, "PATCH", `/api/cookbook/recipes/tacos/notes/${encodeURIComponent(t1)}`, cookie, { tier: "friends" });
+    expect(await patch.json()).toEqual({ slug: "tacos", author: "casey", created_at: t1, tier: "friends" });
+    expect(d1.tables.recipe_notes.find((r) => r.created_at === t1)).toMatchObject({ tier: "friends", private: 0 });
+  });
+
+  it("notes: creation is lens-gated — a nonexistent slug 404s with the read path's not_found and no row lands", async () => {
+    const { env, d1 } = memberEnv({ recipe_notes: [] });
+    const cookie = await loggedIn(env);
+    const res = await send(env, "POST", "/api/cookbook/recipes/no-such-dish/notes", cookie, {
+      body: "should not land",
+      created_at: "2026-07-01T12:00:00.000Z",
+    });
+    expect(res.status).toBe(404);
+    expect(((await res.json()) as { error: string }).error).toBe("not_found");
+    expect(d1.tables.recipe_notes).toHaveLength(0);
   });
 });
 

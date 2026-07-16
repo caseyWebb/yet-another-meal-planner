@@ -207,6 +207,28 @@ export class ProfilePage extends AppPage {
     await expect(this.budgetField().getByTestId("budget-off")).toBeVisible();
   }
 
+  // --- prefs tab: the SaaS-only Curated-collection card -------------------------
+  // (deployment-profiles-and-visibility-lens design request #10; ABSENT under the
+  // self-hosted profile — the default server the authed project runs against.)
+
+  curatedCard(): Locator {
+    return this.page.getByTestId("curated-card");
+  }
+
+  curatedToggle(): Locator {
+    return this.page.getByTestId("curated-toggle");
+  }
+
+  /** The off-state reversibility copy ("They'll reappear… nothing is deleted."). */
+  curatedReversible(): Locator {
+    return this.page.getByTestId("curated-reversible");
+  }
+
+  /** Flip the household curated-hide toggle and wait for the merge-patch to land. */
+  async toggleCurated(): Promise<void> {
+    await this.awaitPreferencesSave(() => this.curatedToggle().click());
+  }
+
   // --- prefs tab: shared Store adapter card ------------------------------------
 
   storeCard(): Locator {

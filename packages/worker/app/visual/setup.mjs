@@ -9,11 +9,11 @@
 // Playwright waits on. Everything is local + offline (miniflare D1/KV) — the app suite
 // needs no Access bypass (nothing here touches /admin pages).
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SEED, d1Statements, kvEntries } from "../../admin/visual/seed.mjs";
+import { SEED, d1Statements, kvEntries, saasD1Statements } from "../../admin/visual/seed.mjs";
 
 const sh = (cmd, args, opts = {}) => execFileSync(cmd, args, { stdio: "inherit", ...opts });
 
@@ -114,20 +114,95 @@ const tmp = mkdtempSync(join(tmpdir(), "app-seed-"));
 const mdPath = join(tmp, "recipe.md");
 writeFileSync(mdPath, recipeMd);
 sh("npx", ["wrangler", "r2", "object", "put", `yamp-corpus/recipes/${SEED.recipe.slug}.md`, "--file", mdPath, "--local"]);
+// The lens fixture slugs (SEED.app.lens) need readable BODIES on the SAAS server —
+// the note-tier composer specs open their DETAIL pages there (readRecipeDetail reads
+// recipes/<slug>.md; without a body the page 404s regardless of the D1 lens). Only the
+// saas persist dir gets them (seeded further down): no default-server spec opens these
+// slugs' detail pages, and each `wrangler r2 object put` is a full CLI boot — four
+// puts on one server keep setup inside the webServer readiness budget.
+const lensSlugs = [...SEED.app.lens.curated, SEED.app.lens.outOfLens];
+const lensMdPath = (slug) => {
+  const p = join(tmp, `${slug}.md`);
+  writeFileSync(
+    p,
+    recipeMd.replace(`title: ${SEED.recipe.title}`, `title: ${slug}`).replace(`source: ${SEED.recipe.source}`, `source: https://example.com/${slug}`),
+  );
+  return p;
+};
 
-sh("npx", [
-  "wrangler",
-  "dev",
-  "--local",
-  "--port",
-  process.env.PW_APP_PORT || "8788",
+// Deterministic operator config (connect-modal): the connect modal's specs assert
+// TEMPLATED copy — in production MARKETPLACE_REPO is stamped by the deploy and
+// OPERATOR_NAME falls back to OWNER_TENANT_ID; here both are fixture values.
+const devVars = [
   "--var",
   `APP_BUILD:${HARNESS_BUILD}`,
-  // Deterministic operator config (connect-modal): the connect modal's specs assert
-  // TEMPLATED copy — in production MARKETPLACE_REPO is stamped by the deploy and
-  // OPERATOR_NAME falls back to OWNER_TENANT_ID; here both are fixture values.
   "--var",
   "MARKETPLACE_REPO:caseyWebb/yet-another-meal-planner-deployment",
   "--var",
   `OPERATOR_NAME:${SEED.members.active}`,
+];
+
+// --- the SaaS deployment variant (deployment-profiles-and-visibility-lens) ----------
+// The deployment profile is a D1 SINGLETON (operator_config.deployment_profile), so one
+// server can only ever be one profile — the SaaS cold-start / curated / lens specs run
+// against a SECOND `wrangler dev` over a DEDICATED persist dir seeded with the identical
+// fixture set plus the saas overlay (saasD1Statements). The default state stays
+// self-hosted, so every existing spec is untouched; the `saas` Playwright project points
+// its baseURL at this port (cookies are host-scoped, not port-scoped, so the authed
+// storageState works on both). Spawned in the background — Playwright tears down this
+// setup's whole process tree, taking the sibling server with it; global-setup warms both.
+const SAAS_PORT = process.env.PW_APP_SAAS_PORT || "8789";
+const SAAS_STATE = ".wrangler/state-app-saas";
+sh("npx", ["wrangler", "d1", "migrations", "apply", "DB", "--local", "--persist-to", SAAS_STATE]);
+sh("npx", [
+  "wrangler",
+  "d1",
+  "execute",
+  "DB",
+  "--local",
+  "--persist-to",
+  SAAS_STATE,
+  "--command",
+  [...d1Statements(now), ...saasD1Statements()].join(" "),
 ]);
+for (const [binding, key, value] of kvEntries()) {
+  sh("npx", ["wrangler", "kv", "key", "put", key, value, "--binding", binding, "--local", "--persist-to", SAAS_STATE]);
+}
+// The R2 corpus bodies this server's specs open: the shared seeded recipe plus the
+// lens fixture slugs (their detail pages are only visited in the saas specs).
+for (const slug of [SEED.recipe.slug, ...lensSlugs]) {
+  const file = slug === SEED.recipe.slug ? mdPath : lensMdPath(slug);
+  sh("npx", ["wrangler", "r2", "object", "put", `yamp-corpus/recipes/${slug}.md`, "--file", file, "--local", "--persist-to", SAAS_STATE]);
+}
+// The same server-side member sessions as the default state, so the shared storageState
+// cookie authenticates against this variant too.
+for (const [token, tenant] of [
+  [APP_SESSION_TOKEN, SEED.members.active],
+  [SPEND_SESSION_TOKEN, SEED.app.spend.fixtureTenant],
+]) {
+  sh("npx", [
+    "wrangler",
+    "kv",
+    "key",
+    "put",
+    `session:${token}`,
+    JSON.stringify({ tenant, created_at: now, refreshed_at: now }),
+    "--binding",
+    "TENANT_KV",
+    "--local",
+    "--persist-to",
+    SAAS_STATE,
+  ]);
+}
+// DISTINCT inspector ports: `wrangler dev` binds a debug inspector on 9229 by default,
+// so two instances in one container race for it — whichever boots second dies with
+// "Address already in use (127.0.0.1:9229)" (a nondeterministic boot failure). Pin both.
+spawn(
+  "npx",
+  ["wrangler", "dev", "--local", "--port", SAAS_PORT, "--inspector-port", "9330", "--persist-to", SAAS_STATE, ...devVars],
+  {
+    stdio: "inherit",
+  },
+);
+
+sh("npx", ["wrangler", "dev", "--local", "--port", process.env.PW_APP_PORT || "8788", "--inspector-port", "9329", ...devVars]);

@@ -281,6 +281,11 @@ export function buildDryRunDeps(realDeps: DiscoveryDeps): DryRunDeps {
       if (outcome) outcome.wouldMatchMembers = attributions.map((a) => a.tenant);
     },
 
+    async grantCurated() {
+      // Dry run: a would-be curated grant writes nothing (the outcome row is captured
+      // by recordLog like every other outcome).
+    },
+
     async recordLog(entry: LogEntry) {
       outcomes.push({
         url: entry.url,

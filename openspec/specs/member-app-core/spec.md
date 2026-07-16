@@ -39,82 +39,64 @@ consumes them via `hc` with `import type` only.
 
 ### Requirement: Cookbook browse and keyword search
 
-The app SHALL serve a cookbook index endpoint (the shared recipe index projected to the
-compact hit shape — including `time_total` — title-sorted), a keyword search endpoint
-reusing the cookbook's field-weighted keyword ranking, and a new-for-me endpoint reusing
-the per-member discovery read with its last-planned watermark. Search SHALL be
-keyword-only — no request-time embedding — and SHALL keep the debounced-against-API
-behavior (the mock's in-memory keystroke search is a painted door, not a contract).
+The app SHALL serve a cookbook index endpoint (the shared recipe index projected to the compact hit shape — including `time_total` — title-sorted), a keyword search endpoint reusing the cookbook's field-weighted keyword ranking, and a new-for-me endpoint reusing the per-member discovery read with its last-planned watermark — every one of them over the caller's **visibility lens** (the shared enforcement point; under self-hosted this is the full attached corpus, today's behavior). Each index/search hit SHALL additionally carry its `provenance` for the caller's household — `own`, `friend`, or `curated`, the highest-precedence grant that admits it — so list surfaces can render curated (and later friend) provenance without a second read. Search SHALL be keyword-only — no request-time embedding — and SHALL keep the debounced-against-API behavior (the mock's in-memory keystroke search is a painted door, not a contract).
 
-The browse page SHALL be **one unified, filterable list**: search bar → global filter
-bar → the promoted "Recommended for you" panel (see `member-app-differentiators`) → a
-single flat, title-sorted organic list over the full index. The page SHALL NOT render
-sectioned browse lists ("New & trending" / "Picked for you" / "All recipes").
+The browse page SHALL be **one unified, filterable list**: search bar → global filter bar → the promoted "Recommended for you" panel (see `member-app-differentiators`) → a single flat, title-sorted organic list over the caller's visible index. The page SHALL NOT render sectioned browse lists ("New & trending" / "Picked for you" / "All recipes"). Rows whose provenance is `curated` SHALL render a visible "Curated" badge on the shared RecipeRow (beside the facet chips, the promo-badge slot treatment).
 
-**Filter bar.** A cuisine select and a protein select — options derived from the loaded
-corpus (distinct non-null values, sorted, "All cuisines"/"All proteins" defaults), never
-from the authoring vocabulary — and a time segmented control (Any / ≤20 / ≤30 / ≤45).
-One global filter state SHALL apply to search results, the promoted panel (per-row), the
-organic list, and the favorites view. A recipe with no numeric `time_total` SHALL fail
-any active time filter — an unknown-time recipe is never claimed under a time budget. A
-"Clear" affordance and an "N of M match" count label SHALL render only while at least
-one filter is active; the filtered-empty states ("No recipes match these filters." /
-"None of your favorites match these filters.") SHALL repeat an inline "Clear filters"
-link.
+**Filter bar.** A cuisine select and a protein select — options derived from the loaded (lens-visible) corpus (distinct non-null values, sorted, "All cuisines"/"All proteins" defaults), never from the authoring vocabulary — and a time segmented control (Any / ≤20 / ≤30 / ≤45). One global filter state SHALL apply to search results, the promoted panel (per-row), the organic list, and the favorites view. A recipe with no numeric `time_total` SHALL fail any active time filter — an unknown-time recipe is never claimed under a time budget. A "Clear" affordance and an "N of M match" count label SHALL render only while at least one filter is active; the filtered-empty states ("No recipes match these filters." / "None of your favorites match these filters.") SHALL repeat an inline "Clear filters" link.
 
-**Search mode.** A non-empty query SHALL replace browse mode (the promoted panel
-hidden): a result-count line over the filtered results, the "No matches" empty state
-("Nothing matches "{q}". Try a protein, a cuisine, or an ingredient."), and a clear
-button. Active filters SHALL remain visible and AND onto the search results.
+**Search mode.** A non-empty query SHALL replace browse mode (the promoted panel hidden): a result-count line over the filtered results, the "No matches" empty state ("Nothing matches "{q}". Try a protein, a cuisine, or an ingredient."), and a clear button. Active filters SHALL remain visible and AND onto the search results.
 
-**URL state.** All shareable page state — the query, the cuisine/protein/time filters,
-and the favorites view toggle — SHALL live in validated URL search params with default
-values stripped from the URL, so every combination is shareable and deep-linkable;
-loading such a URL SHALL reproduce the state. Transient input (the un-debounced search
-text) stays client-local.
+**URL state.** All shareable page state — the query, the cuisine/protein/time filters, and the favorites view toggle — SHALL live in validated URL search params with default values stripped from the URL, so every combination is shareable and deep-linkable; loading such a URL SHALL reproduce the state. Transient input (the un-debounced search text) stays client-local.
 
 #### Scenario: Search parity with the public cookbook
 
 - **WHEN** a member searches the cookbook in the app
-- **THEN** the results come from the same pure keyword ranker the public `/cookbook`
-  search serves, over the same index, returning the same hit shape
+- **THEN** the results come from the same pure keyword ranker the public `/cookbook` search serves, returning the same hit shape — over the member's lens rather than the anonymous lens
+
+#### Scenario: Browse renders only lens-visible rows
+
+- **WHEN** a SaaS member browses the cookbook while a non-friend household holds recipes the member's household does not
+- **THEN** those recipes appear nowhere on the page — not in the organic list, search results, filter option derivation, or the promoted panel
+
+#### Scenario: Curated rows are badged
+
+- **WHEN** the browse or search list renders a row whose only grant for the caller's household is the curated tenant's
+- **THEN** the row carries the "Curated" provenance badge beside its facet chips
 
 #### Scenario: One flat organic list replaces the browse sections
 
 - **WHEN** the browse page renders with no query, no filters, and the default view
-- **THEN** below the promoted panel there is exactly one flat, title-sorted recipe list
-  over the full index (minus rows displayed in the panel), with no section headings
+- **THEN** below the promoted panel there is exactly one flat, title-sorted recipe list over the visible index (minus rows displayed in the panel), with no section headings
 
 #### Scenario: Filters narrow every surface with an honest time gate
 
 - **WHEN** the member selects cuisine "italian" and time "≤30"
-- **THEN** the organic list, the promoted panel's rows, the favorites view, and any
-  search results show only italian recipes with a numeric `time_total` ≤ 30 — a recipe
-  lacking `time_total` is excluded — and the "N of M match" count and Clear affordance
-  render
-
-#### Scenario: Clearing filters restores the full list
-
-- **WHEN** filters exclude every recipe and the member follows the inline "Clear
-  filters" link
-- **THEN** the filter state resets, the filtered-empty state disappears, and the full
-  organic list (and promoted panel, outside search/favorites modes) renders again
+- **THEN** the organic list, the promoted panel's rows, the favorites view, and any search results show only italian recipes with a numeric `time_total` ≤ 30 — a recipe lacking `time_total` is excluded — and the "N of M match" count and Clear affordance render
 
 #### Scenario: Filter and view state is shareable by URL
 
-- **WHEN** a member loads a URL carrying query/filter/view search params (e.g.
-  `/?cuisine=italian&time=30`)
-- **THEN** the page renders with exactly that state applied, and interacting with the
-  controls updates the URL params (defaults stripped) without a full reload
+- **WHEN** a member loads a URL carrying query/filter/view search params (e.g. `/?cuisine=italian&time=30`)
+- **THEN** the page renders with exactly that state applied, and interacting with the controls updates the URL params (defaults stripped) without a full reload
 
 ### Requirement: Recipe detail with notes, similar recipes, and the Cook-with-Claude deep link
 
 The recipe detail page SHALL render the recipe's overlay-merged frontmatter, its derived
 description, and its markdown body from the shared corpus; a Similar Recipes section computed by
 the existing pure cosine over cron-captured embeddings (same floor and cap as the public
-cookbook); and the group-aggregated notes for the recipe — the caller's own notes (including
-private ones) editable and deletable, other members' shared notes read-only, per the existing
-privacy rule. Anything conversational SHALL deep-link out to Claude (a link to
+cookbook); and the tier-scoped notes for the recipe — the caller's own notes (every tier)
+editable and deletable, other members' tier-admitted notes read-only with author handle, per the
+`recipe-notes` visibility tiers. The note composer SHALL present a three-state visibility
+control — Public / Friends / Private, rendered with the shared segmented-control primitive (the
+Time-filter treatment), **Friends pre-selected** (never neutral) — with a one-line description of
+the selected tier (Friends: "Your household and friends can see this"; Private: "Only you";
+Public: "Anyone who can see this recipe — including the public cookbook site if this recipe is
+public"). When the recipe is not anonymously visible (the notes read reports
+`anonymously_visible: false`), the Public option SHALL stay selectable with its description
+changed to state the note won't reach the public site. Rendered notes that are not Friends-tier
+SHALL carry a small tier indicator (a lock glyph for Private, a globe for Public; Friends renders
+unmarked), and the own-note edit state SHALL offer the same three-state control seeded with the
+note's current tier. Anything conversational SHALL deep-link out to Claude (a link to
 `claude.ai/new` prefilled with the cook command and slug) — the app SHALL NOT embed a model or
 make any model call for the detail page. The page SHALL ALSO offer an in-app "Start Cooking" entry
 that mounts the SAME shared guided cook-mode component the in-chat recipe card uses (mise-en-place
@@ -130,11 +112,25 @@ the Cook-with-Claude deep link and the existing favorite / add-to-plan / log-as-
   the derived description, and the similar list from the pure nearest-neighbor computation —
   with no new ranking logic
 
-#### Scenario: Note privacy is preserved across the group
+#### Scenario: Note visibility tiers are preserved across the group
 
 - **WHEN** the notes section loads
-- **THEN** it contains every member's shared notes and only the caller's private notes, and edit
+- **THEN** it contains the tier-admitted notes of other members (handle-attributed, with lock and
+  globe indicators on Private and Public rows) and every one of the caller's own notes, and edit
   and delete affordances appear only on the caller's own notes
+
+#### Scenario: Composer defaults to Friends and states the audience
+
+- **WHEN** a member opens the note composer
+- **THEN** the segmented control shows Friends selected with its one-line audience description,
+  and switching tiers swaps the description — including the reduced Public copy when the recipe
+  is not anonymously visible
+
+#### Scenario: Editing a note can change its tier
+
+- **WHEN** a member edits one of their own notes and selects a different tier before saving
+- **THEN** the update is sent with the new tier on the same idempotent note-edit write, and the
+  list re-renders with the matching tier indicator
 
 #### Scenario: Cooking is a deep link, not a model call
 
@@ -615,33 +611,22 @@ grocery status-guard rejection, a 412 rebase, the throttled suggest state).
 
 ### Requirement: Whoami reports the deployment profile and operator identity
 
-The whoami read (`GET /api/session`) SHALL additionally return `profile` — the
-deployment profile (`"self-hosted" | "saas"`) — and `operator: { name, repo }` — the
-operator's display name and plugin-marketplace repo slug — alongside the tenant
-identity, preserving the shared ETag contract. `profile` SHALL be resolved through a
-single Worker-side accessor that is the only site naming the profile source; until the
-deployment-profile flag channel ships, the accessor returns `"self-hosted"` and claims
-no configuration channel. `operator.name` SHALL come from the optional non-secret
-`OPERATOR_NAME` var, falling back to `OWNER_TENANT_ID`, else `null`; `operator.repo`
-from the optional non-secret `MARKETPLACE_REPO` var (stamped onto the deploy by the
-operator deploy workflow from the calling data repo — the data repo IS the
-marketplace), else `null`. Unset config SHALL yield explicit `null`s — never a
-fabricated slug or name.
+The whoami read (`GET /api/session`) SHALL additionally return `profile` — the deployment profile (`"self-hosted" | "saas"`) — and `operator: { name, repo }` — the operator's display name and plugin-marketplace repo slug — alongside the tenant identity, preserving the shared ETag contract. `profile` SHALL be resolved through the single Worker-side accessor that is the only site naming the profile source; the accessor SHALL read the `deployment_profile` value on the `operator_config` D1 singleton (the shipped configuration channel — see `shared-corpus`), resolving NULL/absent to `"self-hosted"`. `operator.name` SHALL come from the optional non-secret `OPERATOR_NAME` var, falling back to `OWNER_TENANT_ID`, else `null`; `operator.repo` from the optional non-secret `MARKETPLACE_REPO` var (stamped onto the deploy by the operator deploy workflow from the calling data repo — the data repo IS the marketplace), else `null`. Unset config SHALL yield explicit `null`s — never a fabricated slug or name.
 
-#### Scenario: Whoami carries the templated operator config
+#### Scenario: Whoami reflects the configured profile
 
-- **WHEN** an authenticated member requests `GET /api/session` on a deployment with
-  `MARKETPLACE_REPO` and `OPERATOR_NAME` set
-- **THEN** the response body carries `profile: "self-hosted"`, `operator.repo` and
-  `operator.name` with those values, and the response keeps its weak ETag /
-  `If-None-Match` 304 behavior
+- **WHEN** an authenticated member requests `GET /api/session` on a deployment whose `operator_config.deployment_profile` is `"saas"`
+- **THEN** the response body carries `profile: "saas"` through the single accessor, and the response keeps its weak ETag / `If-None-Match` 304 behavior
+
+#### Scenario: An unconfigured deployment reports self-hosted
+
+- **WHEN** `GET /api/session` runs on a deployment that never wrote `deployment_profile`
+- **THEN** whoami returns `profile: "self-hosted"` — the compiled default over the NULL column
 
 #### Scenario: Unset operator config degrades to nulls
 
-- **WHEN** `OPERATOR_NAME` and `MARKETPLACE_REPO` are unset (e.g. local dev) and
-  `OWNER_TENANT_ID` is unset
-- **THEN** whoami returns `operator: { name: null, repo: null }`, and with only
-  `OWNER_TENANT_ID` set, `operator.name` is that tenant id
+- **WHEN** `OPERATOR_NAME` and `MARKETPLACE_REPO` are unset (e.g. local dev) and `OWNER_TENANT_ID` is unset
+- **THEN** whoami returns `operator: { name: null, repo: null }`, and with only `OWNER_TENANT_ID` set, `operator.name` is that tenant id
 
 ### Requirement: The sidebar offers a guided Connect-to-Claude modal
 
@@ -728,9 +713,10 @@ badge and the page it mirrors can never disagree. The meal-plan badge SHALL coun
 schedulable meal rows only, excluding project rows (`meal: 'project'`). The grocery badge
 SHALL be the derived to-buy line count — the same derivation the grocery page renders —
 so rows already advanced to `in_cart` or `ordered` are excluded and plan-derived needs are
-included. A count of zero SHALL render no badge. The people badge (pending inbound
-requests) is reserved for the People destination and is not rendered until it ships; the
-mock's friend-count badge is a known mock defect and SHALL NOT be reproduced.
+included. The people badge SHALL count ACTIONABLE PENDING INBOUND requests — the same
+rows the People page's requests inbox renders (swallowed and resolved rows never count) —
+derived from the same people aggregate read the page uses; the mock's friend-count badge
+is a known mock defect and SHALL NOT be reproduced. A count of zero SHALL render no badge.
 
 #### Scenario: Project rows do not inflate the meal-plan badge
 
@@ -743,6 +729,11 @@ mock's friend-count badge is a known mock defect and SHALL NOT be reproduced.
 - **WHEN** the grocery page's derived to-buy view holds M lines
 - **THEN** the grocery badge reads M, and rows advanced to `in_cart` or `ordered` are not
   counted
+
+#### Scenario: The people badge counts the inbox, not friends
+
+- **WHEN** a member has two pending inbound requests, one swallowed inbound row, and five friends
+- **THEN** the People badge reads 2, and accepting or declining both requests removes the badge
 
 ### Requirement: Retrospective page shell with tabs
 The "Cooking log" nav destination SHALL remain the **Retrospective** page at `/retrospective` ("Look back at what you cooked — and what it cost."), with three tabs — **Cooking log** (default), **Spend analyzer**, and **Waste analyzer** — whose selected tab is held in the `?tab` URL search parameter. The Cooking log SHALL retain its composer and log list. The Spend and Waste tabs SHALL each render their production analyzer. The legacy `/log` route SHALL redirect to `/retrospective`.
@@ -1063,3 +1054,92 @@ The app Playwright harness SHALL extend page objects before implementation asser
 #### Scenario: Zero-connectivity walk is browser-proven
 - **WHEN** the browser suite loads persisted Grocery context, disconnects, checks rows, queues Finish, reloads, and reconnects
 - **THEN** the visual/behavior assertions prove one receipt, no per-tap spinner, pending copy before replay, and authoritative post-replay state
+
+### Requirement: Cookbook cold-start onboarding states (SaaS)
+
+Under the SaaS profile, the cookbook browse page SHALL render a cold-start onboarding treatment while the member's household owns zero non-curated imports and has not explicitly dismissed it (the deployment profile comes from whoami; the states never render under self-hosted):
+
+- **Curated-floor state** (curated tier visible): an onboarding panel above the curated list with three compact action cards — "Add friends" (friends' recipes flow into your cookbook; links the People destination), "Import with the agent" (paste a recipe URL in a Claude chat and it lands here; opens the Connect-to-Claude modal when the member is not yet connected), and "Start from the curated set" (anchor-scrolls to the list; hearts and plan-toggles work on curated rows immediately). The curated rows below carry the "Curated" provenance badge.
+- **True-zero state** (curated hidden by the household setting, or the curated tier empty): the same three cards carry the page with the fuller empty-illustration treatment consistent with the existing "No favorites yet" empty-state style, and no recipe list renders.
+- In both states the "Recommended for you" panel and the filter bar SHALL be hidden.
+- **Dismissal**: the panel SHALL disappear permanently once the household owns at least one non-curated import (a derived condition, no stored state), or on explicit dismiss — a persisted household-level flag written through the existing preferences path. A dismissed panel SHALL NOT return when the household later returns to zero own recipes unless the flag is cleared.
+
+The states SHALL be covered by Playwright specs through the real seeded API: both variants, the badge, and dismiss persistence.
+
+#### Scenario: A new SaaS household sees the curated-floor onboarding
+
+- **WHEN** a member of a household with zero non-curated imports (curated visible) opens the cookbook on a SaaS deployment
+- **THEN** the onboarding panel renders its three action cards above the curated list, curated rows are badged, and the Recommended panel and filter bar are absent
+
+#### Scenario: The true-zero variant carries the page
+
+- **WHEN** the same household has set curated-hide and owns no recipes
+- **THEN** the page renders the three cards with the fuller empty treatment, no list, no filter bar, and no promoted panel
+
+#### Scenario: The first own recipe retires the onboarding
+
+- **WHEN** the household gains its first non-curated import (agent import, or later a sweep match)
+- **THEN** the onboarding panel no longer renders and the standard browse page (filter bar, promoted panel when eligible) takes over
+
+#### Scenario: Explicit dismiss persists for the household
+
+- **WHEN** a member dismisses the onboarding panel and any household member reloads the cookbook later, still with zero own recipes
+- **THEN** the panel stays dismissed (household-level persistence), and the curated list or true-zero empty state renders without it
+
+#### Scenario: Self-hosted never sees onboarding
+
+- **WHEN** any member opens the cookbook on a self-hosted deployment, regardless of corpus size
+- **THEN** the cold-start states never render
+
+### Requirement: The People page manages household, friends, requests, nicknames, and invites
+
+The app SHALL serve a People page (`/people`, a sidebar destination) rendering, over the session-gated people aggregate read: a **requests inbox** (only when non-empty; each row shows the avatar initial, the **@handle ALWAYS** — any supplied display name renders beside it, never instead of it — a HOUSEHOLD/FRIEND tier badge, the tier copy ("invites you to join their household" / "wants to be friends"), any note as inert quoted plain text, relative time, Accept and Decline, and a block affordance); the **nickname hint** (always visible, with a live example composed from the viewer's actual nicknames); the **HOUSEHOLD section** ("N people share your pantry and meal plan."; member rows with avatar — a client-local color popover persisted in browser storage only, never the backend — name states You / nickname + @handle / @handle + "Add a nickname", inline nickname edit with empty-save clearing, and remove behind an explicit confirm); the **find/invite split button** per section (exact-@handle popover with optional note and display name | invite-link popover with copy-link and "Copied!" feedback); an **Awaiting response** list (outgoing requests and unredeemed invite links, each with cancel and — for requests — block); and the **FRIENDS section** ("N friends sharing M recipes into your cookbook.", rows adding an "N shared" chip, the same nickname/remove mechanics with unfriend behind a confirm, friend-tier adders, and the empty state "No friends yet — add someone above; their shared recipes will show up in your cookbook."). Household-accept flows SHALL show the nickname seed moment (`will be saved as "{name}" (@handle) — edit`) and, for a mover with an existing account, the not-carried-over confirmation before completing. Decline SHALL be visibly unceremonious locally and invisible remotely (the requester's row never changes). The page SHALL ship Playwright coverage through the real seeded API (`aubr test:app`) for both profile variants.
+
+#### Scenario: Inbox rows always lead with the handle
+
+- **WHEN** a request from `@sam` carrying display name "Sam K." renders in the inbox
+- **THEN** `@sam` is always visible with "Sam K." beside it — never replaced by it — along with the tier badge, quoted inert note, relative time, and Accept/Decline/block affordances
+
+#### Scenario: Nickname editing is inline and self-cleaning
+
+- **WHEN** a member edits another member's nickname inline and later saves it empty
+- **THEN** the row renders the nickname + @handle state after the edit, returns to @handle + "Add a nickname" after the empty save, and the named member never sees any of it
+
+#### Scenario: Removal and unfriending demand a confirm
+
+- **WHEN** a member taps remove on a household member row or unfriend on a friend row
+- **THEN** nothing changes until an explicit confirmation; confirming runs the governed operation (member-move eviction / silent edge severing)
+
+#### Scenario: The live nickname example uses real data
+
+- **WHEN** the viewer has nicknames "Mom" and "Grandma" set
+- **THEN** the nickname hint's example composes them ("Mom and Grandma are coming to town — pick a crowd-pleaser."), falling back to a generic example when the viewer has none
+
+### Requirement: The People page renders a household-only variant under the self-hosted profile
+
+Under the self-hosted deployment profile (from whoami's `profile`), the People page SHALL render the household-only variant as an alternate state of the same page — never a second page: the FRIENDS section, friend-tier request rows, friend-tier adders, and all friend copy are absent; the requests inbox drops the tier badge column (only one tier exists); the header reads "Everyone you cook alongside. Your household shares your pantry and meal plan." (the friends clause dropped); and the layout rebalances so the HOUSEHOLD section carries the page, with the nickname hint promoted to a side-by-side arrangement on wide viewports. Nicknames still apply to everyone in the deployment (the write surface is unchanged); the sidebar People badge counts pending inbound requests exactly as under SaaS. The full page ships under the SaaS profile.
+
+#### Scenario: Self-hosted hides the friend surface
+
+- **WHEN** a member opens the People page on a self-hosted deployment
+- **THEN** no FRIENDS section, friend adder, friend-tier row, or friends header copy renders; the household section, nickname hint, household adders, awaiting list, and badge all function
+
+#### Scenario: One page, two states
+
+- **WHEN** the deployment profile flips
+- **THEN** the same route and page component render the other variant with no separate page, and no friend-tier data is fetched or shown under self-hosted
+
+### Requirement: Join links land on an SPA route
+
+The app SHALL serve `/join/:token` as a client-side route (absorbed by the SPA asset fallback — no `run_worker_first` entry, no `wrangler.jsonc` change) that reads the public token endpoint and renders: the inviter's handle and tier framing for a valid token ("@casey invited you to join their household" / "... to be friends on <deployment>"), the account-creation form (username or handle choice per tier, optional display name, passkey-enroll continuation) for signed-out visitors, the signed-in conversion flow (household-accept confirmation or friend confirmation) for authenticated members, and the uniform invalid-or-expired state for any dead token.
+
+#### Scenario: A valid link renders the tiered landing
+
+- **WHEN** a signed-out visitor opens a valid household-tier join link
+- **THEN** the SPA route renders the inviter's @handle, household framing, and the handle-choice form, and completing it signs them in as a new member of the inviter's household
+
+#### Scenario: A dead link renders one terminal state
+
+- **WHEN** a visitor opens a revoked, expired, redeemed, or never-existent token
+- **THEN** the same invalid-or-expired page renders in all four cases with no distinguishing detail
+

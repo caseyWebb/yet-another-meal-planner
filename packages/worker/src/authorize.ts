@@ -1,9 +1,10 @@
 // The OAuth `/authorize` surface (multi-tenancy §3.2, reworked by webauthn-passkey-auth).
 // The provider routes `/authorize` here. Identity is proven by CROSS-DEVICE APPROVAL: the GET
 // page mints a single-use approval reference and shows a deep link into the passkey-authenticated
-// member web app (`/connect`) plus a verification code; the member approves there; this page polls
-// `/authorize/status` and, once approved, completes the grant with `props: { tenantId }`. No passkey
-// ceremony runs in Claude's OAuth browser.
+// member web app (`/connect`) plus a verification code; the member approves there (binding their
+// `(tenant, member)` pair); this page polls `/authorize/status` and, once approved, completes the
+// grant with `props: { tenantId, memberId }` — `userId` stays the tenant id, the key the admin
+// roster's grant scan groups by. No passkey ceremony runs in Claude's OAuth browser.
 //
 // During the migration GRACE window (INVITE_GRACE ≠ "off"), the page ALSO offers a legacy
 // invite-code form (the pre-passkey path) so members who haven't enrolled can still connect; the
@@ -14,7 +15,13 @@
 import { renderSVG } from "uqr";
 import type { AuthRequest } from "@cloudflare/workers-oauth-provider";
 import type { Env } from "./env.js";
-import { resolveInvite, inviteAccepted, inviteGraceEnabled, normalizeTenantId } from "./tenant.js";
+import {
+  resolveInvite,
+  inviteAccepted,
+  inviteGraceEnabled,
+  resolveIdentity,
+  directoryFromEnv,
+} from "./tenant.js";
 import { mintApproval, claimApproved, viewApproval } from "./connect-approval.js";
 
 const ESC: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
@@ -116,21 +123,29 @@ export async function handleAuthorize(request: Request, env: Env): Promise<Respo
     }
 
     const inv = await resolveInvite(env.TENANT_KV, code);
-    if (!inv || !inviteAccepted(inv, env)) {
-      // Uniform for unknown / expired / grace-rejected legacy code — never distinguish. Only re-show
-      // the legacy form while grace is on (GET hides it once grace is off; keep POST consistent).
+    // The shared identity resolver gates completion (allowlist re-check + member
+    // liveness): a revoked member's lingering invite mapping must not mint even a dead
+    // grant — parity with the `/api` login path. Same uniform failure as a bad code.
+    const resolved = inv && inviteAccepted(inv, env)
+      ? await resolveIdentity(env, inv.tenant, inv.member, directoryFromEnv(env))
+      : null;
+    if (!resolved || "error" in resolved) {
+      // Uniform for unknown / expired / grace-rejected / revoked-member code — never distinguish.
+      // Only re-show the legacy form while grace is on (GET hides it once grace is off; keep POST consistent).
       const body = inviteGraceEnabled(env)
         ? legacyInviteForm(b64, "That invite code isn't valid. Check it and try again.")
         : `<p class="err">That invite code isn't valid. Restart the connection.</p>`;
       return page(`<h1>Connect to yamp</h1>` + body, 400);
     }
-    const tenantId = normalizeTenantId(inv.tenant);
+    const tenantId = resolved.id;
     const { redirectTo } = await env.OAUTH_PROVIDER.completeAuthorization({
       request: oauthReqInfo,
+      // userId stays the TENANT id (the roster's grant:<userId>:* scan contract); the
+      // member rides only in props, bound to the invite's resolved pair.
       userId: tenantId,
       scope: oauthReqInfo.scope,
       metadata: { label: tenantId },
-      props: { tenantId },
+      props: { tenantId, memberId: resolved.member },
     });
     return Response.redirect(redirectTo, 302);
   }
@@ -141,7 +156,7 @@ export async function handleAuthorize(request: Request, env: Env): Promise<Respo
 /**
  * `/authorize/status?authz=<ref>` — the cross-device poll. Pending → `{status:"pending"}`; unknown
  * or expired → `{status:"expired"}`; approved → claim the reference (single completion), complete
- * the OAuth grant with the bound tenant, and return `{status:"approved", redirect}`.
+ * the OAuth grant with the bound `(tenant, member)` pair, and return `{status:"approved", redirect}`.
  */
 export async function handleAuthorizeStatus(request: Request, env: Env): Promise<Response> {
   const ref = new URL(request.url).searchParams.get("authz") ?? "";
@@ -161,13 +176,20 @@ export async function handleAuthorizeStatus(request: Request, env: Env): Promise
   } catch {
     return json({ status: "expired" });
   }
-  const tenantId = normalizeTenantId(claimed.tenant);
+  // The shared identity resolver gates completion here too: an approval bound to a
+  // member who was revoked (or moved households) between approving and this claim must
+  // not mint a grant. Uniform `expired` — no oracle for why.
+  const resolved = await resolveIdentity(env, claimed.tenant, claimed.member, directoryFromEnv(env));
+  if ("error" in resolved) return json({ status: "expired" });
+  const tenantId = resolved.id;
   const { redirectTo } = await env.OAUTH_PROVIDER.completeAuthorization({
     request: oauthReqInfo,
+    // userId stays the TENANT id (the roster's grant:<userId>:* scan contract); the
+    // approving member rides only in props.
     userId: tenantId,
     scope: oauthReqInfo.scope,
     metadata: { label: tenantId },
-    props: { tenantId },
+    props: { tenantId, memberId: resolved.member },
   });
   return json({ status: "approved", redirect: redirectTo });
 }

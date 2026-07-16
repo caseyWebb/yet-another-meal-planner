@@ -17,6 +17,7 @@ import {
   IconPantry,
   IconSparkle,
   IconSun,
+  IconUsers,
   Button,
   toast,
 } from "@yamp/ui";
@@ -29,7 +30,17 @@ import { promptInstall, useInstallAvailable } from "../lib/install";
 import { purgeLocalMemberData, readTenantStamp, writeTenantStamp } from "../lib/persist";
 
 export const Route = createFileRoute("/_app")({
-  loader: async (): Promise<{ tenant: { id: string }; operator: OperatorInfo }> => {
+  loader: async (): Promise<{
+    /** The resolved identity pair from whoami. `member` is the acting member id
+     *  (attribution — the own/community notes split keys on it); it equals `id` for
+     *  founding members and degrades to `id` offline / under deploy skew. */
+    tenant: { id: string; member: string };
+    /** The deployment profile from whoami — gates the SaaS-only surfaces (cookbook
+     *  cold-start, the Preferences curated-collection card). Offline/skew degrades to
+     *  "self-hosted": the gated surfaces simply don't render. */
+    profile: "self-hosted" | "saas";
+    operator: OperatorInfo;
+  }> => {
     const res = await api.api.session.$get().catch(() => null);
     if (res === null) {
       // No server reachable (offline / network error): render the shell for the
@@ -38,7 +49,8 @@ export const Route = createFileRoute("/_app")({
       // its own member's data (D9). The operator config isn't stamped: the
       // connect modal degrades to generic copy offline.
       const stamped = readTenantStamp();
-      if (stamped) return { tenant: { id: stamped }, operator: { name: null, repo: null } };
+      if (stamped)
+        return { tenant: { id: stamped, member: stamped }, profile: "self-hosted", operator: { name: null, repo: null } };
       throw redirect({ to: "/login" });
     }
     if (res.status === 401) {
@@ -49,14 +61,19 @@ export const Route = createFileRoute("/_app")({
     }
     if (!res.ok) throw new Error(`whoami failed (${res.status})`);
     const data = (await res.json()) as {
-      tenant: { id: string };
-      profile: "self-hosted" | "saas";
+      tenant: { id: string; member?: string };
+      profile?: "self-hosted" | "saas";
       operator: OperatorInfo;
     };
     writeTenantStamp(data.tenant.id);
-    // Defensive: a pre-change Worker (deploy skew) omits `operator` — degrade to
-    // generic copy rather than letting the modal's templating throw.
-    return { tenant: data.tenant, operator: data.operator ?? { name: null, repo: null } };
+    // Defensive: a pre-change Worker (deploy skew) omits `operator`/`profile` — degrade
+    // to generic copy / the self-hosted default rather than throwing or over-gating.
+    // `member` falls back to the tenant id (exact for founding members).
+    return {
+      tenant: { id: data.tenant.id, member: data.tenant.member ?? data.tenant.id },
+      profile: data.profile === "saas" ? "saas" : "self-hosted",
+      operator: data.operator ?? { name: null, repo: null },
+    };
   },
   component: AppShell,
 });
@@ -101,6 +118,10 @@ const NAV = [
   { to: "/plan", label: "Meal plan", icon: IconCalendar, count: "plan" },
   { to: "/grocery", label: "Grocery list", icon: IconCart, count: "grocery" },
   { to: "/pantry", label: "Pantry", icon: IconPantry, count: null },
+  // The People badge counts ACTIONABLE PENDING INBOUND requests — the same rows the
+  // page's inbox renders, from the same aggregate read (the shared-derivation rule).
+  // The mock's friend-count badge is a recorded defect, deliberately not reproduced.
+  { to: "/people", label: "People", icon: IconUsers, count: "people" },
   { to: "/retrospective", label: "Retrospective", icon: IconClock, count: null },
 ] as const;
 

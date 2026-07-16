@@ -12,13 +12,14 @@ The data lives in three tiers (see `ARCHITECTURE.md`): the authored markdown cor
 
 - **Authored markdown (R2 bucket `CORPUS`)** — the human-editable tier (an Obsidian vault synced to the same bucket): `recipes/*.md` (objective frontmatter + body) and the `guidance/**/*.md` umbrella (`guidance/ingredient_storage/` — curated put-away advice, read-only; `guidance/cooking_techniques/` — technique memories, agent-writable via `save_guidance`; `guidance/purchasing/` — buy-side selection advice, also agent-writable). Object keys are repo-relative paths (`recipes/<slug>.md`, `guidance/<domain>/<slug>.md`); read/written through `src/corpus-store.ts`. There is no GitHub App or data repo on the data path.
 - **Shared corpus (D1, `migrations/d1/0006_shared_corpus.sql` + `0033_ingredient_identity.sql`)** — objective, single-source, read by everyone: the ingredient identity graph (`ingredient_identity`/`ingredient_alias`/`ingredient_edge` + the `novel_ingredient_terms` queue + `ingredient_normalization_log`), `sku_cache(ingredient, location_id, …)`, `flyer_terms(term)`, `stores(slug, name, domain, extra /*json*/)` (in-store-walk registry — identity columns `slug`/`name`/`domain` are top-level; optional identity fields `label`/`chain`/`address`/`location_id` are stored in the `extra` JSON column; layout lives in store notes), `feeds(url, …)` (RSS discovery feeds), `discovery_candidates(id, url UNIQUE, status, …)` (forwarded-newsletter inbox + group-wide rejection log; `status` values: `pending` | `rejected` — `pending` is the default for unprocessed candidates, `rejected` is set by `reject_discovery`), `discovery_senders`/`discovery_members` (inbound-email allowlist). Written + validated at the Worker write tools; read by query. The recipe index is the derived D1 `recipes` table — there is no `_indexes/recipes.json`.
-- **Attributed records (D1 `recipe_notes` / `store_notes`)** — each member's attributed recipe/store notes, stored in D1 tables carrying `author` (the writing tenant, set by the Worker) + a `private` flag. Both tables use `id TEXT PRIMARY KEY` (a generated stable key); `recipe`/`slug` (the recipe or store slug), `author`, `body`, `tags`, `private`, and `created_at` are ordinary columns (not the primary key). `read_recipe_notes` returns own-private + group-shared in one query, joined with the overlay favorites.
+- **Attributed records (D1 `recipe_notes` / `store_notes`)** — each member's attributed recipe/store notes, stored in D1 tables carrying `author` (the writing member id, set by the Worker; founding member = tenant id for pre-split rows). Recipe notes carry a visibility **`tier`** (`public | friends | private`, default `friends`) with the legacy `private` column dual-written; store notes keep the binary `private` flag. Both tables use `id TEXT PRIMARY KEY` (a generated stable key); `recipe`/`slug` (the recipe or store slug), `author`, `body`, `tags`, `private`, and `created_at` are ordinary columns (not the primary key). `read_recipe_notes` returns the caller's own notes plus the tier-admitted notes in one members-joined query, joined with the overlay favorites.
 - **Per-tenant D1 (the profile)** — each member's grocery **profile** lives in normalized D1 tables (`migrations/d1/0004_profile.sql`): a singleton `profile` row (the markdown fields `taste`/`diet_principles`, the preference scalars `planning_cadence_days`/`weekly_budget`, the per-meal `cadence` JSON map (migration 0052 — the planning-frequency preference), the JSON columns `stores`/`dietary`/`rotation`/`custom`/`kitchen_notes`, `freezer_capacity_estimate`, `last_planned_at`, and the FROZEN legacy columns `default_cooking_nights` (readable — the cadence read-fallback — but no writer) / `lunch_strategy` / `ready_to_eat_default_action` (retired; converge to NULL via the pref-retirement cron and drop, with `default_cooking_nights`, at the deprecation-window close) — the per-tenant planning watermark, migration 0016, stamped by `update_meal_plan` on an add and read by `list_new_for_me`), plus child tables `brand_prefs(tenant, term, tiers, any_brand)`, `kitchen_equipment(tenant, slug)`, `staples(tenant, name, normalized_name, perishable)`, `overlay(tenant, recipe, favorite, reject)` (the two mutually-exclusive disposition marks; there is no `status` lifecycle or `rating` column), `ready_to_eat(tenant, slug, meal, name, favorite, reject, category, source, brand, notes)`, and `stockup(tenant, name, normalized_name, unit, typical_purchase, notes, baseline_price, buy_at_or_below)`. `idx_overlay_recipe` powers the cross-tenant group-favorites query. Reads assemble the agent-facing objects from these rows (`src/profile-db.ts`); writes mutate rows — no document format on the profile path.
 - **Per-tenant D1 (session state)** — each member's working state lives in D1 row tables (`migrations/d1/0005_session_state.sql`): `pantry(tenant, name, normalized_name, quantity, category, prepared_from, added_at, last_verified_at, notes)`, `meal_plan(tenant, id /*opaque row id — PRIMARY KEY (tenant, id), migration 0052*/, recipe, meal /*breakfast|lunch|dinner|project, default dinner*/, planned_for, sides /*json*/, from_vibe /*meal-vibe slot provenance, migration 0026; advisory, never slug-resolved*/)`, `grocery_list(tenant, name, normalized_name, quantity, kind, domain, status, source, for_recipes /*json*/, note, added_at, ordered_at, sent_in /*internal send-record linkage, migration 0051*/)` — keyed by normalized name (pantry/grocery) or the opaque row id (meal plan — per-slot identity, D26-final: `id` is a client- or server-minted ULID, or the migration's one-time 32-hex mint; formats mix, so nothing ever parses or meaningfully sorts an id, and `id ASC` is only an arbitrary-but-deterministic tiebreak; there is deliberately NO unique index on `(tenant, recipe)` — a recipe may occupy several rows by explicit user action, and uniqueness lives in the op layer's slug-global coalesce; project rows carry no date and no sides, enforced at the op layer, not by a CHECK), with `meal_plan_tenant_recipe(tenant, recipe)` backing the slug ops, `idx_grocery_status(tenant, status)` and `idx_pantry_category(tenant, category)` backing the read filters. Adds are row upserts (`INSERT … ON CONFLICT DO UPDATE`), removes/status changes are targeted row statements — no whole-array rewrite, strong read-after-write consistency. (The detailed item shapes are below.) The Worker read path has **no** GitHub/KV fallback — a miss returns empty/null.
 - **Shared operational D1 (reconcile + bug reports + discovery log)** — group-wide (not per-tenant) operational tables the Worker owns: `reconcile_errors(slug, path, message, recorded_at)` (`migrations/d1/0014_reconcile_errors.sql`) — recipes the index reconcile **skipped**, replaced wholesale each pass; `bug_reports(id, reporter, title, body, created_at, status)` (`migrations/d1/0015_bug_reports.sql`) — agent-filed bug reports, `reporter`/`created_at` attributed server-side; and `discovery_log(id, url, title, source, outcome, slug, detail, created_at)` (`migrations/d1/0016_background_discovery.sql`) — the discovery sweep's per-candidate outcome log, one table serving three roles (operator audit, intake dedup, parked-error surface), retention-pruned. (The detailed shapes are below.)
-- **Sweep-/reconcile-owned per-member D1 (discovery sweep)** — group-wide *attribution + taste* tables the discovery sweep owns (`migrations/d1/0016_background_discovery.sql`): `discovery_matches(recipe, tenant, score, matched_at)` — per-member match attribution (the import gate **and** the `list_new_for_me` filter); and `taste_derived(tenant, taste_hash, embedding, updated_at)` — each member's taste-text embedding, content-hash gated like `recipe_derived`. Like `recipe_derived`, these are **siblings of `recipes`** so the index projection's wholesale `recipes` rebuild never owns them. (The detailed shapes are below.)
+- **Sweep-/reconcile-owned per-member D1 (discovery sweep)** — group-wide *attribution + taste* tables the discovery sweep owns (`migrations/d1/0016_background_discovery.sql`): `discovery_matches(recipe, tenant, member, score, matched_at)` — per-member match attribution (the import gate **and** the `list_new_for_me` filter); and `taste_derived(tenant, taste_hash, embedding, updated_at)` — each member's taste-text embedding, content-hash gated like `recipe_derived`. Like `recipe_derived`, these are **siblings of `recipes`** so the index projection's wholesale `recipes` rebuild never owns them. (The detailed shapes are below.)
+- **Visibility grants (D1 `recipe_imports`, migration 0059)** — the canonical grant relation behind the recipe **visibility lens**: one provenance row per `(recipe, household)`, written at creation by every import path and read by the one lens enforcement point (`src/visibility.ts`). Included in a tenant purge; untouched by a member revoke (the grant belongs to the household). (The detailed shape is below.)
 
-**Three-category recipe model:** a recipe's *content* (objective frontmatter + body) is shared markdown in the R2 corpus; its *overlay* (`favorite` + `reject`) is per-tenant in the D1 `overlay` table; its *notes* are per-tenant, attributed, append-mostly in the D1 `recipe_notes` table (`id TEXT PRIMARY KEY`, `recipe`, `author`, `body`, `tags`, `private`, `created_at`). `last_cooked` is **not stored** — it's derived per-tenant from the D1 `cooking_log` table (`MAX(date)` per recipe). Read tools merge shared content + the caller's overlay + cooking-log `last_cooked` at read time.
+**Three-category recipe model:** a recipe's *content* (objective frontmatter + body) is shared markdown in the R2 corpus; its *overlay* (`favorite` + `reject`) is per-tenant in the D1 `overlay` table; its *notes* are per-member, attributed, append-mostly in the D1 `recipe_notes` table (`id TEXT PRIMARY KEY`, `recipe`, `author`, `body`, `tags`, `tier`, `private`, `created_at`). `last_cooked` is **not stored** — it's derived per-tenant from the D1 `cooking_log` table (`MAX(date)` per recipe). Read tools merge shared content + the caller's overlay + cooking-log `last_cooked` at read time.
 
 The shared corpus, profile, session state, cooking log, and attributed notes are all **D1 tables** (see the placement list above and `migrations/d1/*.sql`), not repo files. Per-artifact sections below document each artifact's current D1 column shape.
 
@@ -37,11 +38,14 @@ The shared corpus, profile, session state, cooking log, and attributed notes are
   "brands":  { "olive_oil": { "tiers": [["California Olive Ranch"]], "any_brand": false },
                "yellow_onion": { "tiers": [], "any_brand": true } },
   "dietary": { "avoid": [], "limit": ["cilantro"] },
+  "curated_hide": true,                        // boolean, defined key — true hides the CURATED recipe tier from the
+                                               //   whole household's visibility lens (profile.curated_hide column);
+                                               //   present in the export only when set (shown is the default)
   "custom":  { /* arbitrary agent-added keys */ }
 }
 ```
 
-`update_preferences` takes a `patch` and applies **JSON Merge Patch (RFC 7396)**: a present key sets, `null` deletes, nested objects merge to any depth, arrays replace wholesale. Validation is staged — an unknown top-level patch key is rejected toward `custom` (`validation_failed`), then the merged result's types are validated (`malformed_data` on a bad enum/shape, storing nothing). The whole patch applies in one D1 transaction. Each `brands` family value is a **tier object** and maps onto rows: a family present in the patch UPSERTs the **merged** family value into that `brand_prefs` row's `tiers`/`any_brand` columns (a partial family patch like `{ any_brand: true }` merges into the stored object — tiers preserved), `null` DELETEs the row (back to ambiguous = "ask me"), and an absent term leaves its row untouched. For one deprecation window a legacy flat rank list is accepted-and-converted with a `warnings` entry on the return (see docs/TOOLS.md's deprecation convention). `cadence` merges **per key** (`{ cadence: { lunch: 2 } }` sets lunch only; `{ cadence: { dinner: null } }` clears one key; `cadence: null` clears the map). For the same window `default_cooking_nights: N` is accepted as an **alias** merged onto `cadence.dinner` (the frozen column is never written), and the retired `lunch_strategy` / `ready_to_eat_default_action` keys are **accepted and dropped** — each flagged in `warnings`. The **profile export** (`read_user_profile`) always carries `cadence` (the stored map, or the read-time derivation `{ breakfast: 0, lunch: 0, dinner: default_cooking_nights ?? 5 }` when unset) and mirrors `default_cooking_nights` from the effective `cadence.dinner` for the window; the retired pair never appears in the export.
+`update_preferences` takes a `patch` and applies **JSON Merge Patch (RFC 7396)**: a present key sets, `null` deletes, nested objects merge to any depth, arrays replace wholesale. Validation is staged — an unknown top-level patch key is rejected toward `custom` (`validation_failed`), then the merged result's types are validated (`malformed_data` on a bad enum/shape, storing nothing). The whole patch applies in one D1 transaction. Each `brands` family value is a **tier object** and maps onto rows: a family present in the patch UPSERTs the **merged** family value into that `brand_prefs` row's `tiers`/`any_brand` columns (a partial family patch like `{ any_brand: true }` merges into the stored object — tiers preserved), `null` DELETEs the row (back to ambiguous = "ask me"), and an absent term leaves its row untouched. For one deprecation window a legacy flat rank list is accepted-and-converted with a `warnings` entry on the return (see docs/TOOLS.md's deprecation convention). `cadence` merges **per key** (`{ cadence: { lunch: 2 } }` sets lunch only; `{ cadence: { dinner: null } }` clears one key; `cadence: null` clears the map). `curated_hide` must be a boolean when present (`null` deletes it, back to the shown default). For the same window `default_cooking_nights: N` is accepted as an **alias** merged onto `cadence.dinner` (the frozen column is never written), and the retired `lunch_strategy` / `ready_to_eat_default_action` keys are **accepted and dropped** — each flagged in `warnings`. The **profile export** (`read_user_profile`) always carries `cadence` (the stored map, or the read-time derivation `{ breakfast: 0, lunch: 0, dinner: default_cooking_nights ?? 5 }` when unset) and mirrors `default_cooking_nights` from the effective `cadence.dinner` for the window; the retired pair never appears in the export.
 
 ## Recipe frontmatter (recipes/*.md)
 
@@ -305,33 +309,38 @@ Example rows:
 **Notes:**
 - A row carries `favorite` (`1` = favorited) **or** `reject` (`1` = hidden) — never both (the two are **mutually exclusive**; setting one clears the other). NULL/absent = not set. An empty row is dropped (the slug falls back to neutral/available); clearing a flag with nothing else set DELETEs the row, so there are no lingering `favorite: 0` / `reject: 0` rows.
 - Disposition is **per-tenant**: one member's `reject` hides the recipe from them alone, and a favorite is one member's alone. `reject` is a **hard gate** — a rejected recipe is excluded from that member's `search_recipes` results entirely.
-- The group-favorites aggregate (`read_recipe_notes`) is a single indexed query (`SELECT tenant, favorite FROM overlay WHERE recipe=?`) scoped to the caller's group, not a per-tenant scan.
+- The group-favorites aggregate (`read_recipe_notes`) is a single indexed query (`SELECT tenant, favorite FROM overlay WHERE recipe=?`) scoped to the caller's lens households, not a per-tenant scan.
 
-## recipe_notes (per-tenant, D1 `recipe_notes` table)
+## recipe_notes (per-member, D1 `recipe_notes` table)
 
-A member's **attributed notes** on one recipe (shared or personal) — the spin-capture mechanism. Stored in the D1 `recipe_notes` table (`id TEXT PRIMARY KEY`); columns: `recipe` (slug), `author` (the writing tenant, set by the Worker), `body`, `tags`, `private`, `created_at`. Append-mostly. Adding a note never modifies shared content; an author MAY edit or delete their **own** notes (`update_recipe_note` / `remove_recipe_note`, addressed by `created_at`, self-scoped) but never another tenant's.
+A member's **attributed notes** on one recipe (shared or personal) — the spin-capture mechanism. Stored in the D1 `recipe_notes` table (`id TEXT PRIMARY KEY`); columns: `recipe` (slug), `author` (the writing member id, set by the Worker; founding member = tenant id for pre-split rows), `body`, `tags`, `tier`, `private`, `created_at`. Append-mostly. Adding a note never modifies shared content; an author MAY edit or delete their **own** notes (`update_recipe_note` / `remove_recipe_note`, addressed by `created_at`, self-scoped) but never another member's.
 
 ```sql
 -- D1 recipe_notes table — one row per note, across all tenants
 id          TEXT PRIMARY KEY   -- generated stable key
 recipe      TEXT               -- recipe slug
-author      TEXT               -- writing tenant (set by the Worker)
+author      TEXT               -- writing member id (set by the Worker)
 body        TEXT               -- required; rows with no body are dropped on read
 tags        TEXT               -- JSON array, e.g. ["tweak", "observation"]; default []
-private     INTEGER            -- 1 = owner-only; default 0
+private     INTEGER            -- LEGACY, derived: dual-written as (tier = 'private')
 created_at  TEXT               -- ISO timestamp (required; addressable key for edit/delete)
+tier        TEXT               -- visibility tier: CHECK (tier IN ('public','friends','private'));
+                               -- migration 0061; new notes default 'friends'
 ```
 
 Example rows:
 
-| id | recipe | author | body | tags | private | created_at |
-|----|--------|--------|------|------|---------|------------|
-| rn_abc | miso-glazed-salmon | alice | Subbed gochujang for the sriracha — better. | ["tweak"] | 0 | 2026-06-09T18:30:00.000Z |
-| rn_def | miso-glazed-salmon | alice | Didn't love it cold the next day. | [] | 1 | 2026-06-10T01:05:00.000Z |
+| id | recipe | author | body | tags | tier | private | created_at |
+|----|--------|--------|------|------|------|---------|------------|
+| rn_abc | miso-glazed-salmon | alice | Subbed gochujang for the sriracha — better. | ["tweak"] | friends | 0 | 2026-06-09T18:30:00.000Z |
+| rn_def | miso-glazed-salmon | alice | Didn't love it cold the next day. | [] | private | 1 | 2026-06-10T01:05:00.000Z |
 
 **Notes:**
-- `body` (required), `created_at` (required), `tags` (optional, default `[]`), `private` (optional, default `false`). A note with no `body` is dropped on read.
-- `read_recipe_notes(slug)` aggregates **non-private** notes from every member (attributed) plus the **caller's own** private notes; another member's `private` note is never surfaced. Group favorites (a single indexed query over the D1 `overlay` table, scoped to the group) ride the same read. `created_at` is the addressable key for `update_recipe_note` / `remove_recipe_note`.
+- `body` (required), `created_at` (required), `tags` (optional, default `[]`), `tier` (optional on the wire, default `friends`). A note with no `body` is dropped on read.
+- **`tier` is the source of truth** — `private` = author-only (member-level), `friends` = the author's household + friend households (everyone under self-hosted), `public` = anyone who can see the recipe, including the anonymous `/cookbook` page where the recipe itself is anonymously visible. No read path consults the `private` column; it is **dual-written** (`private = 1` exactly when `tier = 'private'`) purely so a rolled-back Worker never widens a private note's audience.
+- **NULL-healing rule**: a NULL `tier` (a row written by pre-tier code during a rollback window) reads as `COALESCE(tier, CASE WHEN private = 1 THEN 'private' ELSE 'friends' END)` — the same pure mapping migration 0061's backfill applied (`private=1` → `'private'`, everything else → `'friends'`), so unmigrated rows behave identically and converge organically.
+- `read_recipe_notes(slug)` aggregates the tier-admitted notes in one `members`-joined query (the join supplies each author's `handle` and household): the caller's own notes at every tier, `friends` notes from the caller's own + friend households, `public` notes from any household; another member's `private` note is never surfaced. Group favorites (a single indexed query over the D1 `overlay` table, scoped to the caller's lens households) ride the same read. `created_at` is the addressable key for `update_recipe_note` / `remove_recipe_note`; a tier change rides `update_recipe_note`.
+- The anonymous `/cookbook/<slug>` page renders **public-tier notes only**, selected tier-scoped in SQL, and only where the recipe is anonymously visible.
 
 ## pantry (per-tenant, D1 session state)
 
@@ -754,25 +763,58 @@ Example rows:
 **Notes:**
 - `reporter` and `created_at` are set by the Worker — the agent supplies only `title`/`body`. `status` defaults to `open`; the operator closes it through the admin panel.
 
+## recipe_imports (D1 `recipe_imports` table, shared — the visibility-grant relation)
+
+The **canonical grant relation** behind the recipe **visibility lens** (D12): one provenance row per `(recipe, household)`, recording how the recipe first arrived for that household. Visibility is **computed at read time** from these rows — a recipe is visible to a household when its own row exists, a friend household's row exists, or the reserved curated tenant's row exists (subject to the household's `profile.curated_hide`); under the **self-hosted** deployment profile the friend input is the implicit all-to-all relation (any household's non-curated row grants visibility — computed from the profile flag, never stored). Nothing per-viewer is ever materialized. Written at creation by **every** import path — `create_recipe` (fresh create and dedup-to-grant), the discovery sweep (in the same batch as its match rows), curated intake, and the `lens-reconcile` scheduled job (legacy attachment) — through one grant primitive (`src/visibility.ts`); read only through that module's lens queries. Included in a tenant purge; a member revoke never touches it (the grant belongs to the household). Migration 0059.
+
+```sql
+-- D1 recipe_imports table — one provenance row per (recipe, household). PRIMARY KEY (recipe, tenant):
+-- a household's second import of the same recipe is INSERT OR IGNORE — first provenance wins.
+-- idx_recipe_imports_tenant on (tenant) backs the per-household lens reads.
+recipe      TEXT  -- recipe slug (joins recipes.slug)  NOT NULL
+tenant      TEXT  -- owning household; or the reserved curated tenant  NOT NULL
+member      TEXT  -- importing member  NOT NULL — no NULL-owner sentinel; reconciled/backfilled
+                  --   and curated rows stamp the founding-member value (= tenant id)
+via         TEXT  -- how the recipe first arrived for this household  NOT NULL:
+                  --   'agent' (conversational import / operator attachment) |
+                  --   'feed:<url>' (sweep feed/email intake, the canonical feed URL) |
+                  --   'satellite' (sweep import pushed by a satellite) |
+                  --   'curated' (the curated tier; tenant is the reserved curated tenant)
+imported_at TEXT  -- YYYY-MM-DD
+```
+
+Example rows:
+
+| recipe | tenant | member | via | imported_at |
+|--------|--------|--------|-----|-------------|
+| harissa-roast-chicken | alice | alice | feed:https://example.com/feed.xml | 2026-06-26 |
+| harissa-roast-chicken | ~curated | ~curated | curated | 2026-07-02 |
+| jatjuk | bob | bob | agent | 2026-07-01 |
+
+**The reserved curated tenant.** Curated-tier grants are owned by the system tenant **`~curated`** (a code constant, `CURATED_TENANT` in `src/visibility.ts`). `~` is syntactically outside the canonical tenant-username space and the product handle grammar, so no signup, onboarding, or invite path can ever claim it; it has no allowlist entry, no `tenants`-registry row, no `members` row, and can never resolve a session or token — it exists **only** as a value in `recipe_imports.tenant`/`member`. Curated rows grant visibility under the SaaS profile only (and are exactly the anonymous `/cookbook` position there); the self-hosted lens arm excludes them.
+
 ## discovery_matches (per-member, D1 `discovery_matches` table)
 
-The **discovery sweep**'s per-member match attribution: which member(s) the sweep matched an imported recipe to, and at what taste score. This one record does **double duty** — it is the sweep's **import gate** (a candidate is imported only when ≥1 member matches it, so the shared corpus never floods any one member with the group's combined discovery firehose) **and** the per-member filter behind `list_new_for_me` (a member sees only the discoveries attributed to them). Keyed by `(recipe, tenant)`; written by the sweep on an import (`src/discovery-db.ts` `recordDiscoveryMatches`), read by `readNewForMe`. **Sibling of `recipes`** (like `recipe_derived`/`taste_derived`), so the index projection's wholesale `recipes` rebuild never touches it. Migration 0016.
+The **discovery sweep**'s per-member match attribution: which member(s) the sweep matched an imported recipe to, and at what taste score. This one record does **double duty** — it is the sweep's **import gate** (a candidate is imported only when ≥1 member matches it, so the shared corpus never floods any one member with the group's combined discovery firehose) **and** the per-member filter behind `list_new_for_me` (a member sees only the discoveries attributed to them — attribution is per-**member** via the `member` column, while recipe visibility is per-household via `recipe_imports`). Keyed by `(recipe, tenant)`; written by the sweep on an import (`src/discovery-db.ts` `recordDiscoveryMatches`) **in the same batch as the household's `recipe_imports` grant** — one write path, so attribution and visibility cannot drift (the `lens-reconcile` job heals any historical match row missing its grant). Curated intake writes **no** match rows. Read by `readNewForMe`. **Sibling of `recipes`** (like `recipe_derived`/`taste_derived`), so the index projection's wholesale `recipes` rebuild never touches it. Migration 0016; `member` added by 0059.
 
 ```sql
 -- D1 discovery_matches table — one row per (recipe, member) the sweep matched. PRIMARY KEY (recipe, tenant).
 -- idx_discovery_matches_tenant on (tenant) backs the per-member new-for-me read.
 recipe     TEXT  -- recipe slug (joins recipes.slug)  NOT NULL
-tenant     TEXT  -- the member the sweep matched it to  NOT NULL
+tenant     TEXT  -- the household the sweep matched it to  NOT NULL
+member     TEXT  -- the matched member within that household (0059) — backfilled to the founding
+                 --   member (= tenant id), exact under the founding-member invariant; the sweep
+                 --   stamps real members going forward. list_new_for_me filters on it.
 score      REAL  -- the taste cosine that cleared the match threshold (provenance / log detail)
 matched_at TEXT  -- YYYY-MM-DD the match was recorded
 ```
 
 Example rows:
 
-| recipe | tenant | score | matched_at |
-|--------|--------|-------|------------|
-| harissa-roast-chicken | alice | 0.6312 | 2026-06-26 |
-| harissa-roast-chicken | bob | 0.5841 | 2026-06-26 |
+| recipe | tenant | member | score | matched_at |
+|--------|--------|--------|-------|------------|
+| harissa-roast-chicken | alice | alice | 0.6312 | 2026-06-26 |
+| harissa-roast-chicken | bob | bob | 0.5841 | 2026-06-26 |
 
 ## discovery_log (D1 table, shared)
 
@@ -879,6 +921,9 @@ freezer_capacity_estimate   TEXT     -- tight | moderate | spacious
 rotation                    TEXT     -- JSON: {resurface_after_days?, novelty_boost?}
 retrospective_prefs         TEXT     -- JSON: {stale_after_days?, revealed_months?, revealed_min_cooks?}; overrides retrospective defaults per member (0021)
 last_planned_at             TEXT     -- YYYY-MM-DD planning watermark (0016): set by update_meal_plan on an add; bounds list_new_for_me
+curated_hide                INTEGER  -- household-level curated-tier hide (0059): NULL/0 = curated shown (the default),
+                                     --   1 = the whole curated tier leaves this household's visibility lens; reversible,
+                                     --   deletes nothing; surfaced as the `curated_hide` preferences boolean
 
 -- D1 brand_prefs table — one row per (tenant, ingredient term). PRIMARY KEY (tenant, term).
 tenant    TEXT     -- owning user
@@ -1177,7 +1222,7 @@ Content-addressed request-time query vectors (member-app-propose D5), in the `KR
 
 The member web app's session store (member-session-auth), in the `TENANT_KV` namespace beside the `tenant:*` allowlist and `invite:*` codes — identity-adjacent operational state, never domain data. Written/read by `src/session.ts`; nothing edits it by hand.
 
-- `session:<token>` → `{ tenant, created_at, refreshed_at }` (epoch ms) — one record per live web session. `<token>` is 32 bytes from `crypto.getRandomValues`, base64url (256 bits, never logged); the same value rides the `__Host-session` cookie (`HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/`, `Max-Age` 90d). Written with `expirationTtl` ≈ 90 days — **the KV TTL is the single expiry authority** (no second clock). The session middleware re-puts the record with a fresh TTL (rolling lifetime) only when `refreshed_at` is >24 h old, so a chatty session costs ≤1 extension write/day. Deleted on logout, and scanned-and-deleted by member revocation (`revoke()` matches the stored `tenant`); the middleware's `resolveTenant` allowlist re-check makes a missed key moot.
+- `session:<token>` → `{ tenant, member, created_at, refreshed_at }` (epoch ms) — one record per live web session, bound to the `(tenant, member)` pair that logged in. `<token>` is 32 bytes from `crypto.getRandomValues`, base64url (256 bits, never logged); the same value rides the `__Host-session` cookie (`HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/`, `Max-Age` 90d). Written with `expirationTtl` ≈ 90 days — **the KV TTL is the single expiry authority** (no second clock). A record minted before the member-identity split has no `member` field and resolves to the **founding member** (`member = tenant` — the uniform legacy-defaulting rule); the throttled rolling refresh re-puts the record carrying `member`, so live legacy sessions converge organically. The middleware re-puts with a fresh TTL only when `refreshed_at` is >24 h old, so a chatty session costs ≤1 extension write/day. Deleted on logout, scanned-and-deleted by household purge (matching the stored `tenant`) and by member-revoke (matching the record's resolved member, legacy defaulting included); the middleware's `resolveIdentity` allowlist + member-liveness re-check makes a missed key moot.
 - **Fixed-window rate-limit counters** (`KROGER_KV` — ephemeral infra, self-expiring): the shared limiter (`src/rate-limit.ts`, `underRateLimit(kv, key, max, windowS, now)` — fail-open, `expirationTtl: windowS × 2`) appends a window bucket to its caller's key. Callers: `ingest:rl:<keyId>:<bucket>` (the satellite push/pull surfaces, 120/min per key) and `login:rl:<ip>:<bucket>` (member login, 10/min per client IP from `CF-Connecting-IP`, `"unknown"` fallback).
 
 ## Invite records (KV, not a repo file)
@@ -1186,12 +1231,14 @@ The operator-issued **bootstrap** codes, in the `TENANT_KV` namespace beside the
 
 This KV bootstrap path is one of **two, deliberately separate, invite systems**. A KV `invite:<code>` **resolves an existing** tenant (operator onboarding + recovery of one named member). A **group invite code** (self-service-signup, in D1 — see *Group invite codes* below) **creates a new** tenant from a self-chosen username. The two never share a namespace or a redemption path.
 
-- `invite:<code>` → `{ v, tenant, single_use, expires_at }` (JSON) — a code minted by `onboard()`/`rotate()`. `v` is the record-shape version; `tenant` is the allowlisted member id the code resolves to; `single_use` is `true`; `expires_at` is the code's expiry. Written with a **30-day KV `expirationTtl`**. `rotate()` mints a grace-bypassing single-use bootstrap — the recovery primitive for a member who lost every device or was never enrolled before grace was turned off (see `SELF_HOSTING.md`).
-- **Legacy shape:** a pre-migration invite record is a **bare-string** value (just the tenant id, no JSON). `resolveInvite` parses both shapes — the JSON record and the bare string — so existing codes keep resolving. Whether a legacy bare-string code still *authenticates* is governed by the operator `INVITE_GRACE` grace control (a Worker `var`, default on; see `SELF_HOSTING.md`): honored while grace is on, rejected once it is off. A single-use JSON bootstrap is always honored until consumed/expired, regardless of the grace flag.
+- `invite:<code>` → `{ v, tenant, member, single_use, expires_at }` (JSON) — a code minted by `onboard()`/`rotate()`. `v` is the record-shape version; `tenant` is the allowlisted tenant id and `member` the member id the code resolves to (the admin surface mints founding-member codes); `single_use` is `true`; `expires_at` is the code's expiry. Written with a **30-day KV `expirationTtl`**. `rotate()` mints a grace-bypassing single-use bootstrap — the recovery primitive for a member who lost every device or was never enrolled before grace was turned off (see `SELF_HOSTING.md`).
+- **Legacy shapes:** a pre-migration invite record is a **bare-string** value (just the tenant id, no JSON), and a JSON record written before the member-identity split has no `member` field. `resolveInvite` parses all of these; a record without a member dimension resolves to the **founding member** (`member = tenant` — the uniform legacy-defaulting rule). Whether a legacy bare-string code still *authenticates* is governed by the operator `INVITE_GRACE` grace control (a Worker `var`, default on; see `SELF_HOSTING.md`): honored while grace is on, rejected once it is off. A single-use JSON bootstrap is always honored until consumed/expired, regardless of the grace flag.
 
 ## Group invite codes + the tenant registry (D1: `signup_invites`, `signup_redemptions`, `tenants`)
 
 The self-service-signup store (multi-use group invite codes), all in D1 via `src/signup-db.ts` (never `env.DB` directly). Distinct from the KV `invite:<code>` bootstrap path above: a group code **creates** a tenant, a bootstrap code **resolves** one. An operator mints a group code with a **cap** (max redemptions) and an optional **expiry** + **label**; a friend redeems it at `POST /api/signup` under a chosen username, which atomically creates a new isolated tenant. Redemption is web-app-only (never the MCP `/authorize` surface). Migration `0047_self_service_signup`.
+
+**The invite-kind trio** — three deliberately separate kinds, distinguished by authority and effect, sharing **no namespace and no redemption path** (each path rejects the foreign kinds uniformly): the KV `invite:<code>` **bootstrap** (operator-minted; RESOLVES an existing `(tenant, member)` for login/enrollment), the D1 **group invite code** here (operator-minted; CREATES a standalone tenant, capped, no social edge), and the D1 **`member_invites` link** (member-minted; creates a RELATIONSHIP — household membership or a friendship — and an account when the redeemer has none; see its own section).
 
 - **`tenants`** — the FIRST strongly-consistent registry of tenant ids, keyed by the canonical lowercase id (`PRIMARY KEY`), the **uniqueness authority** for self-service username claims. A claim does `INSERT … ON CONFLICT(id) DO NOTHING` and wins iff first; the KV `tenant:<id>` allowlist entry (still the hot-path resolution authority) is written only after the claim wins. `via_code` is the group code that created the tenant, or `NULL` for an operator-onboarded member. Existing tenants are backfilled here idempotently on the `scheduled()` reconcile (`backfillTenantRegistry`, `src/signup.ts`). Purged (by `id`) on member revocation.
 - **`signup_invites`** — the group codes. `used` is bumped by a guarded `UPDATE … WHERE used < max_redemptions AND (expires_at IS NULL OR expires_at > ?) AND revoked_at IS NULL` — a single serialized statement that is the **atomic cap gate**, so the cap is never exceeded under concurrency. Revoking sets `revoked_at` (halts further signups; accounts already created are untouched). Operator-owned, NOT per-tenant — never purged on member revoke.
@@ -1220,23 +1267,117 @@ tenant     TEXT     -- the created tenant id (isolation column for the revoke pu
 created_at INTEGER  -- epoch ms
 ```
 
+## members (D1 `members` table)
+
+The member-identity substrate (multi-tenancy): one row per member within a tenant (household). The **tenant is the isolation boundary; the member is attribution within it** — every per-request identity resolves to a `(tenant, member)` pair before any tool or route runs. Every tenant created by onboarding or a tenant-creating signup path has a **founding member whose id and handle equal the canonical tenant id**, so every credential value issued before the member-identity split (grant props, session records, WebAuthn user handles, invite mappings, note-author values) is already a valid member id — zero re-keying, by construction. A tenant **spawned by the member-move primitive** (leave-household / eviction) is instead founded by the moving member, who keeps their existing id and handle (member ids never change — WebAuthn user handles are burned into authenticators). Read/written only through `src/members-db.ts` over `src/db.ts` (never `env.DB` directly). Migration `0058_member_identity`.
+
+- **Minting:** every tenant-creation path writes the founding member in the same flow — operator onboarding (`onboard()`), group-code self-service redemption (`redeemGroupCode`), friend-tier invite-link redemption (`/api/join`), the member-move spawn, the migration's idempotent seed over the `tenants` registry, and a **lazy convergence guard** at identity resolution that mints the founding row only when the presented member id equals the tenant id AND the tenant has zero member rows (healing a KV-allowlisted tenant the registry missed; under any other condition a missing member row is a structured `unauthorized`). **Non-founding members** are minted with server-generated ULID ids and a member-chosen handle (household-tier invitation accepts and join-link redemptions), bounded by the household size cap (`HOUSEHOLD_MAX_MEMBERS`, 8).
+- **Handles** are deployment-unique (`idx_members_handle`, a unique index). Every NEW handle or username mint — join-link and invitation handles, self-service usernames, operator-onboarded usernames — validates the ONE product handle grammar `^[a-z0-9_]{3,20}$` (`HANDLE_RE`, `src/members-db.ts`). Everything already issued is grandfathered verbatim, including values outside the grammar (no read-path validation anywhere); machine-suffixed spawned-tenant ids (`<handle>-2`, `-3`, …) use a hyphen deliberately outside the grammar so they can never collide with a future mint. Handle rename rules belong to later changes.
+- **Lifecycle:** in the household-purge `TENANT_TABLES` batch (all rows for the tenant); member-revoke deletes one row — refused for a tenant's last member, in-batch as well as up front.
+
+```sql
+-- D1 members table. PRIMARY KEY (id); UNIQUE idx_members_handle on (handle);
+-- idx_members_tenant on (tenant).
+id         TEXT     -- opaque member id; founding member: equals the tenant id
+tenant     TEXT     -- owning household (isolation column)
+handle     TEXT     -- deployment-unique display key; founding: equals the tenant id
+created_at INTEGER  -- epoch ms
+```
+
+## friendships (D1 `friendships` table)
+
+The symmetric, accepted-only tenant↔tenant edge relation (social-graph) — the data source of the visibility lens's friend seam (`friendHouseholds`, `src/visibility.ts`). Each edge is stored **once** as a canonically ordered pair (`tenant_a < tenant_b`, CHECK-enforced), so duplicates and self-edges are unrepresentable. **Accepted-only by construction:** pending state lives in `social_requests`, never here — a row here IS an accepted friendship, and severing (unfriend / friend-tier block / purge) is a plain delete that hides both cookbooks on the next lens read. Read/written through `src/social-db.ts` over `src/db.ts`. Migration `0060_households_social`.
+
+```sql
+-- PRIMARY KEY (tenant_a, tenant_b); CHECK (tenant_a < tenant_b); idx_friendships_b on (tenant_b).
+tenant_a     TEXT     -- lexicographically LOWER tenant id
+tenant_b     TEXT     -- lexicographically HIGHER tenant id
+requested_by TEXT     -- member id that sent the originating request
+created_at   INTEGER  -- epoch ms
+```
+
+## social_requests (D1 `social_requests` table)
+
+Household/friend request rows (social-graph), append-then-resolve. `tier` is `household` (an INVITATION into the sender's household, addressed to the invitee personally) or `friend` (addressed to the target household — any member may act). The requester's view derives from state: **`pending`, `declined`, and `swallowed` all render "Request sent"** (D24's invisible decline), the standing outgoing cap counts all three, and no read ever distinguishes them to the requester. `swallowed` rows (an active 30-day decline cooldown or a household-wide block match at send time, or a block minted over a pending row) reach **no inbox** and their `note`/`display_name` are never delivered. A declined pair's cooldown anchor is its `resolved_at`; cancelling keeps a declined row's anchor (state `cancelled`, `resolved_at` preserved) and nulls it for cancelled pending/swallowed rows, so the cooldown probe reads `declined` rows plus `cancelled` rows with a non-null `resolved_at`.
+
+```sql
+-- PRIMARY KEY (id) — a ULID. idx_social_requests_to on (to_tenant, state);
+-- idx_social_requests_from on (from_tenant, state).
+id           TEXT     -- ULID
+tier         TEXT     -- 'household' | 'friend'
+from_tenant  TEXT     -- sending household
+from_member  TEXT     -- sending member
+to_tenant    TEXT     -- target household (friend tier); invitee's household at send time
+to_member    TEXT     -- the looked-up member; household tier: the invitee (personal)
+note         TEXT     -- inert plain text, <= 200 chars; rendered quoted, never interpreted
+display_name TEXT     -- sender-supplied self-introduction (the nickname seed)
+state        TEXT     -- 'pending' | 'accepted' | 'declined' | 'cancelled' | 'swallowed'
+created_at   INTEGER  -- epoch ms
+resolved_at  INTEGER  -- epoch ms; a declined row's value is the pair's cooldown anchor
+```
+
+## member_invites (D1 `member_invites` table)
+
+Member-minted invite links (social-graph) — the **third invite kind** (see the trio note under *Group invite codes*). Single-use, 14-day expiry, per-invite `inviter_member` + `tier`; the link is `<origin>/join/<token>`. Redemption claims the token **atomically with what it creates** (a guarded UPDATE — one winner; a downstream handle/username collision refunds the claim, the group-code idiom). Unknown, expired, revoked, and already-redeemed tokens are **indistinguishable** on `/api/join` (one uniform `invalid_or_expired` — cancel = revocation, oracle-free), and a blocked party's redemption consumes the token and creates nothing, behind the same uniform state. Friend-tier mints are refused under the self-hosted profile.
+
+```sql
+-- PRIMARY KEY (token) — >= 128 random bits, base64url. idx_member_invites_tenant on (tenant).
+token          TEXT     -- the bearer token (unguessable, never logged)
+tenant         TEXT     -- inviter household (isolation column)
+inviter_member TEXT     -- the minting member
+tier           TEXT     -- 'household' | 'friend'
+created_at     INTEGER  -- epoch ms
+expires_at     INTEGER  -- epoch ms (mint: created_at + 14 days)
+revoked_at     INTEGER  -- epoch ms; NULL = live (cancel = revoke)
+redeemed_at    INTEGER  -- epoch ms; NULL = unredeemed (single-use claim stamp)
+redeemed_by    TEXT     -- resulting member id (household) or tenant id (friend)
+```
+
+## nicknames (D1 `nicknames` table)
+
+Per-viewer, **others-only** aliases (social-graph): one row per `(viewer_member, target_member)`, writable only by the viewer, never disclosed to the named member or any third member on any surface (a member's export includes nicknames they SET, never nicknames set FOR them). Empty-save clears (row delete); the canonical pair key makes the member app's offline replay converge. Seeded from a newcomer's self-supplied `display_name` when a relationship forms (only for viewers without an existing alias — seeds are ordinary editable rows). `tenant` is the VIEWER's household (isolation/purge column; re-keyed when the viewer moves households). Targets may be any live member of the deployment.
+
+```sql
+-- PRIMARY KEY (viewer_member, target_member); idx_nicknames_tenant on (tenant).
+tenant        TEXT     -- the VIEWER's household (isolation column)
+viewer_member TEXT     -- who set the alias (the only member who ever sees it)
+target_member TEXT     -- who it names (never told)
+nickname      TEXT     -- <= 40 chars plain text
+updated_at    INTEGER  -- epoch ms
+```
+
+## blocks (D1 `blocks` table)
+
+Directional, tier-scoped suppression records (social-graph, D24). Minted by one member from an inbox row, an awaiting-response row, or a friend row — but **evaluated household-wide** (one member's block binds the household). A matching block makes the counterparty's future requests of that tier silently swallow, swallows their existing pending inbox rows at mint time, severs the friendship when minted from a friend row, and makes their invite-link redemptions consume-and-create-nothing. Household-tier blocks record `blocked_member` and match by member id (the protection follows the person across member-moves); friend-tier blocks match by tenant. Block records stay with the household that minted them when the minter later moves. Silent-swallow subsumes mute — no separate mute exists; unblock is a plain delete that retroactively delivers nothing.
+
+```sql
+-- PRIMARY KEY (tenant, tier, blocked_tenant).
+tenant          TEXT     -- blocking household (isolation column)
+blocking_member TEXT     -- the member who clicked (audit; evaluation is household-wide)
+tier            TEXT     -- the tier this record suppresses ('household' | 'friend')
+blocked_tenant  TEXT     -- counterparty household at mint time
+blocked_member  TEXT     -- set for household-tier blocks (follows the person); NULL for friend
+created_at      INTEGER  -- epoch ms
+```
+
 ## WebAuthn ceremony state (KV, not a repo file)
 
 Ephemeral, single-use ceremony state for passkeys and the cross-device MCP approval (passkey-auth), in the `TENANT_KV` namespace — identity-adjacent, self-expiring, mirroring the Kroger PKCE-nonce pattern. Written/read by `src/webauthn.ts` / `src/authorize.ts`; nothing edits it by hand.
 
 - `webauthn:chal:<challenge>` → the ceremony **purpose** string, `"reg"` or `"auth"` (the challenge string itself is the key; no tenant is bound to the challenge — the enrolling tenant comes from the session at verify time). **Single-use** — deleted on verification — with a short TTL (~5 min). A returned attestation/assertion is verified against the stored challenge; a missing or already-consumed challenge, or a purpose mismatch, fails verification.
-- `authz:<ref>` → `{ oauth, clientName, code, status, tenant? }` — the Claude.ai `/authorize` **approval reference**. `oauth` is the base64-encoded parsed OAuth request; `clientName` is the requesting client's display name; `code` is the short human-readable verification code shown on both the `/authorize` page and the web app's `/connect` screen; `status` is `"pending"` → `"approved"`; `tenant` is bound server-side when a passkey-authenticated member approves (pending-only and one-shot — an approved reference is never re-bound). **Single-use** with a ~10-min TTL — the poll completes `completeAuthorization` EXACTLY ONCE and then deletes the reference; an expired or already-consumed reference is rejected and mints no token.
+- `authz:<ref>` → `{ oauth, clientName, code, status, tenant?, member? }` — the Claude.ai `/authorize` **approval reference**. `oauth` is the base64-encoded parsed OAuth request; `clientName` is the requesting client's display name; `code` is the short human-readable verification code shown on both the `/authorize` page and the web app's `/connect` screen; `status` is `"pending"` → `"approved"`; `tenant` and `member` are bound server-side from the approving passkey-authenticated session (pending-only and one-shot — an approved reference is never re-bound; a record written before the member-identity split has no `member` and claims as the founding member). **Single-use** with a ~10-min TTL — the poll completes `completeAuthorization` EXACTLY ONCE and then deletes the reference; an expired or already-consumed reference is rejected and mints no token. The completed grant carries `props: { tenantId, memberId }` with the grant's `userId` = the tenant id (the roster's `grant:<userId>:*` scan contract); a grant minted before the split carries `props: { tenantId }` only and resolves to the founding member on every MCP request.
 
 ## webauthn_credentials (per-tenant, D1 `webauthn_credentials` table)
 
-Each member's enrolled **passkeys** (passkey-auth) — one row per device, many per tenant. A member authenticates on both member surfaces with these credentials; the invite code is only the single-use bootstrap that seeds their first login/connection (see *Invite records* above). Written/read through `src/db.ts` (never `env.DB` directly), keyed by the credential id; `idx_webauthn_tenant` on `(tenant)` backs the list-by-tenant read and the revocation purge. Included in the per-tenant `TENANT_TABLES` batch (`src/admin.ts`), so member revocation deletes every row. Passkey login and connect-approve are rate-limited per client IP by the shared fixed-window limiter (`src/rate-limit.ts`, fail-open). Migration `0046_webauthn_credentials`.
+Each member's enrolled **passkeys** (passkey-auth) — one row per device, many per tenant and per member. A member authenticates on both member surfaces with these credentials; the invite code is only the single-use bootstrap that seeds their first login/connection (see *Invite records* above). Written/read through `src/db.ts` (never `env.DB` directly), keyed by the credential id; `idx_webauthn_tenant` on `(tenant)` backs the list-by-tenant read and the purge. Scoped by both lifecycle operations: household purge (the `TENANT_TABLES` batch, `src/admin.ts`) deletes every row for the tenant; member-revoke deletes only the revoked member's rows. Passkey login and connect-approve are rate-limited per client IP by the shared fixed-window limiter (`src/rate-limit.ts`, fail-open). Migrations `0046_webauthn_credentials` + `0058_member_identity` (the `member` column).
 
-Binary fields are stored **base64url** (the Worker runs on `workerd` — no `Buffer`): `credential_id` and `public_key` are base64url text. The verification library is `@simplewebauthn/server@13.3.2` (pure WebCrypto), supporting at least ES256 (`-7`) and RS256 (`-257`); registration is `residentKey: "required"` / `attestation: "none"` with the WebAuthn user handle = the tenant id.
+Binary fields are stored **base64url** (the Worker runs on `workerd` — no `Buffer`): `credential_id` and `public_key` are base64url text. The verification library is `@simplewebauthn/server@13.3.2` (pure WebCrypto), supporting at least ES256 (`-7`) and RS256 (`-257`); registration is `residentKey: "required"` / `attestation: "none"` with the WebAuthn user handle = the **member id** (for a founding member that equals the tenant id — exactly the handle every credential enrolled before the member-identity split carries burned in, which is why the migration backfill re-keys nothing).
 
 ```sql
 -- D1 webauthn_credentials table — one row per enrolled device. PRIMARY KEY (credential_id).
 -- idx_webauthn_tenant on (tenant).
-tenant        TEXT     -- owning member (many rows may share it)
+tenant        TEXT     -- owning tenant/household (many rows may share it)
+member        TEXT     -- owning member (= the credential's user handle); backfilled to tenant by 0058
 credential_id TEXT     -- WebAuthn credential id, base64url — the primary key
 public_key    TEXT     -- COSE public key, base64url
 sign_count    INTEGER  -- authenticator signature counter; STORED, NEVER ENFORCED (see below)
@@ -1333,10 +1474,11 @@ The operator admin panel (operator-admin) is a **Hono** app at `/admin` — serv
 **Member lifecycle** (`/admin/api/*`, called by the Members island):
 
 - `GET /admin/api/tenants` → `{ tenants: TenantRosterRow[] }` — every allowlisted member as a structured roster row (canonical lowercase ids, sorted), operational status only (no per-tenant domain data — see "Tenant listing is operational-only"): `{ id, owner, status: "active" | "pending", kroger: "linked" | "unlinked", joined, lastActive, cooked, favorites }`. `owner` is `id === env.OWNER_TENANT_ID` (false for everyone when that var is unset — never inferred from onboarding order). `status` is `active` once the member has at least one persisted OAuth grant in `OAUTH_KV` (a completed Claude.ai connection — a single prefix `list()` over `grant:<userId>:<grantId>` keys, the `@cloudflare/workers-oauth-provider` grant format, extracting the tenant id as the `userId` segment; see `oauthGrantTenantIds` in `src/admin.ts`), else `pending` (including a revoked grant); this KV list degrades to an empty set on failure (every tenant reports `pending`) rather than throwing, so a transient KV outage cannot break the roster. `joined`/`lastActive` are sourced independently from the `tenant_activity` row's `first_seen_at`/`last_seen_at` (epoch ms) — both `null` when that tenant has no such row, regardless of `status`. `kroger` reflects whether `kroger:refresh:<id>` exists in `KROGER_KV`, read via a single prefix `list` (no per-tenant get). `cooked`/`favorites` are `COUNT(*)` over `cooking_log` and `overlay WHERE favorite = 1` respectively, each a single `GROUP BY tenant` aggregate across the whole roster (never one query per member).
-- `POST /admin/api/tenants` `{ username, invite_code? }` → `{ username, invite_code, connector_url }` — onboard; writes `tenant:<id>` + `invite:<code>` (generates the code when omitted). `connector_url` is `<origin>/mcp`.
-- `POST /admin/api/tenants/<id>/rotate` → `{ username, invite_code, connector_url }` — mint a new code, delete the member's prior `invite:*` mapping(s); allowlist + per-tenant data untouched. Errors `not_found` if the member is absent.
+- `POST /admin/api/tenants` `{ username, invite_code? }` → `{ username, invite_code, connector_url }` — onboard; writes `tenant:<id>`, the founding `members` row (id and handle = the canonical tenant id), and `invite:<code>` resolving to that `(tenant, member)` pair (generates the code when omitted). `connector_url` is `<origin>/mcp`.
+- `POST /admin/api/tenants/<id>/rotate` → `{ username, invite_code, connector_url }` — mint a new code, delete the member's prior `invite:*` mapping(s). Member-addressed with the founding member as the default (the endpoint passes only the tenant id); allowlist, member row, + per-tenant data untouched. Errors `not_found` if the member is absent.
 - `POST /admin/api/tenants/<id>/kroger-login` → `{ url }` — mint a single-use Kroger consent link bound to an allowlisted member (the same nonce the `kroger_login_url` MCP tool mints, allowlist-rechecked via `resolveTenant`), so the operator can link a member who has no `/mcp` session yet. The nonce rides only in the returned `url` and is never logged; `not_found` for a non-member.
-- `DELETE /admin/api/tenants/<id>` → `{ username, revoked: true, invites_removed }` — remove `tenant:<id>` + every `invite:* → id` + `kroger:refresh:<id>`, and purge the per-tenant D1 tables + attributed notes through `src/db.ts`. The member's issued token stops resolving (allowlist re-check fails).
+- `DELETE /admin/api/tenants/<id>` → `{ username, revoked: true, invites_removed, sessions_removed }` — **household purge**: remove `tenant:<id>` + every `invite:*`/`session:*` resolving to the tenant + `kroger:refresh:<id>`, and purge the per-tenant D1 tables (`members` included) + all members' attributed notes (`author IN` the household's member set, deleted before the `members` rows so non-founding authors never orphan) + the household's social rows in **both directions** (`friendships` and `social_requests` as either party, its `member_invites`, `nicknames` it holds and nicknames targeting its members, `blocks` it minted and blocks recorded against it or its members) through `src/db.ts`. The household's issued tokens stop resolving (allowlist re-check fails).
+- `DELETE /admin/api/tenants/<id>/members/<member>` → `{ username, member, revoked: true, invites_removed, sessions_removed }` — **member revoke**: delete one member's `members` row, `webauthn_credentials` rows, attributed notes (`author = member`), their social rows (nicknames set and targeting them; outgoing `social_requests` cancelled; minted `member_invites` revoked; `blocked_member` block records), and every `session:*`/`invite:*` resolving to that member (a pre-split record with no member field belongs to the founding member) — leaving the allowlist entry, `tenants` registry row, Kroger token, and household tables untouched. The member's grants/sessions stop resolving via the shared resolver's member-liveness check. Refused (`conflict`) for a tenant's last member — enforced inside the delete batch too (a concurrent last-two-members race can never produce a zero-member allowlisted tenant); household purge is the applicable operation.
 
 **Usage dashboards** (SSR at `/admin/usage`, rendered in-process from `src/usage.ts` — no JSON route): each view renders either `{ configured: false }` (when `CF_ACCOUNT_ID`/`CF_ANALYTICS_TOKEN` is unset, shown as a setup card) or the configured shape below; an upstream/transport failure degrades to that area's error card.
 
@@ -1688,10 +1830,10 @@ Example row (all knobs tuned):
 
 ## operator_config (D1 singleton, operator-scoped)
 
-**Operator-scoped** — read at each MCP tool call (ranking, flyer) and at cron start (flyer warm). Written only via the admin Config panel. Follows the same sparse-override singleton pattern as `discovery_config`: only columns an operator has explicitly tuned are non-null; absent or null columns fall back to `DEFAULT_OPERATOR_CONFIG` compiled defaults. An empty or absent row runs with all defaults.
+**Operator-scoped** — read at each MCP tool call (ranking, flyer, the deployment profile) and at cron start (flyer warm, the curated source). Written only via the admin Config panel. Follows the same sparse-override singleton pattern as `discovery_config`: only columns an operator has explicitly tuned are non-null; absent or null columns fall back to `DEFAULT_OPERATOR_CONFIG` compiled defaults. An empty or absent row runs with all defaults.
 
 ```sql
--- D1 operator_config table (migration 0019). SINGLE ROW (id = 1, enforced by CHECK).
+-- D1 operator_config table (migration 0019; deployment columns 0059). SINGLE ROW (id = 1, enforced by CHECK).
 id                  INTEGER PRIMARY KEY CHECK (id = 1)  -- singleton guard
 -- Ranking weights (precedence: compiled → operator_config → per-tenant rotation)
 favorite_weight     REAL     -- boost for favorited recipes in ranking; null → 0.15
@@ -1704,6 +1846,13 @@ overlap_cap         INTEGER  -- max key-ingredient overlaps counted; null → 2
 min_flyer_discount  REAL     -- minimum savings fraction to include in flyer results; null → 0.05
 flyer_refresh_hours INTEGER  -- hours between flyer warm runs; null → 24
 flyer_batch_units   INTEGER  -- SKUs fetched per Kroger flyer batch call; null → 12
+-- Deployment (0059)
+deployment_profile  TEXT     -- CHECK IN ('self-hosted','saas'); NULL resolves to 'self-hosted'
+                             --   (existing deployments need no write)
+curated_source_url  TEXT     -- the curated tier's public feed: NULL → the compiled product
+                             --   default (DEFAULT_CURATED_SOURCE_URL, src/operator-config.ts);
+                             --   '' (empty string) → curated intake disabled; any other value →
+                             --   an operator repoint. Consumed by the sweep under SaaS only.
 ```
 
 Example row (ranking weights adjusted, flyer defaults left as-is):
@@ -1717,6 +1866,8 @@ Example row (ranking weights adjusted, flyer defaults left as-is):
 - `saveOperatorConfig(env, patch)` upserts the id=1 row with non-null fields from the patch. `validateOperatorConfig(patch, {confirm})` enforces: `favorite_weight`/`novelty_boost`/`pantry_weight` in [0, 2]; `perish_weight`/`key_weight` in [0, 10]; `min_flyer_discount` in [0, 1]; `overlap_cap` positive integer ≤ 20; `flyer_refresh_hours` integer in [1, 720]; `flyer_batch_units` integer in [1, 200].
 - Floor guards (`FLOOR_FLYER_REFRESH_HOURS = 6`, `FLOOR_FLYER_BATCH_UNITS = 4`) mirror `discovery_config`'s footgun-floor pattern: a value AT OR BELOW the floor requires `confirm: true` in the admin PUT to override — the API rejects without it (400 `validation_failed` + `needsConfirm: true`, `field`, `floor`), preventing accidental under-refresh (hammering the Kroger flyer endpoint) or under-batching (inflating per-tick embedding overhead). Validation runs only on write — a value saved below a floor before this gate existed is not retroactively rejected on read, only blocked on its next edit. The five ranking weight knobs (`favorite_weight`/`novelty_boost`/`pantry_weight`/`perish_weight`/`key_weight`) and `overlap_cap`/`min_flyer_discount` carry NO floor — `0` (or the range minimum) is a legitimate, non-dangerous value for a weight or a cap, so those knobs never need `confirm` regardless of value.
 - Ranking precedence: compiled defaults → `operator_config` → per-tenant `profile.rotation` (for `novelty_boost` / `resurface_after_days`). `resolveRankParams` in `src/semantic-search.ts` applies these three tiers in order.
+- **`deployment_profile` is the D9 profile flag's one configuration channel**, read exclusively through `loadDeploymentProfile(env)` (`src/deployment.ts`) — every profile-conditioned path (the visibility lens, the trending guard, the curated sweep, whoami, the admin card) takes that accessor's value. It is deliberately NOT a wrangler var (the operator deploy merge drops code-repo `vars`, and a var would make the flip guards unenforceable). Written via `PUT /admin/api/deployment-config` (read via the sibling GET), with **flip guards** on the write path: self-hosted → SaaS requires an explicit `confirm` (implicit all-to-all edges disappear and the public `/cookbook` narrows to the curated tier); SaaS → self-hosted is **refused** with a structured `conflict` (the consent-inversion guard — `confirm` cannot override) while more than one household owns a non-empty non-curated cookbook (≥1 own `recipe_imports` row, curated tenant excluded).
+- **`curated_source_url` is tri-state** (NULL = product default / `''` = disabled / value = repoint), resolved by `loadDeploymentConfig` (`src/operator-config.ts`); the same admin card writes it. The curated feed joins the sweep's ordinary per-tick feed rotation and volume-governance bounds, so curated intake can never starve member feeds.
 
 ## guidance/
 
@@ -1823,7 +1974,7 @@ A member's attributed notes on one store retain immutable/addressable `created_a
 -- D1 store_notes table — one row per note, across all tenants
 id          TEXT PRIMARY KEY   -- generated stable key
 store       TEXT               -- store slug
-author      TEXT               -- writing tenant (set by the Worker)
+author      TEXT               -- writing member id (set by the Worker)
 body        TEXT               -- required; rows with no body are dropped on read
 tags        TEXT               -- JSON array, e.g. ["layout", "location"]; default []
 private     INTEGER            -- 1 = owner-only; default 0

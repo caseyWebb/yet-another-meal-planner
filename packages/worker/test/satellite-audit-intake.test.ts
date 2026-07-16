@@ -176,7 +176,7 @@ describe("readSatelliteLiveness: the folded-in quality dimension", () => {
 });
 
 describe("read_satellite_rejections tool", () => {
-  const tenant: Tenant = { id: "casey" } as Tenant;
+  const tenant: Tenant = { id: "casey", member: "casey" };
   const serverEnv = (env: Env): Env => ({ ...(env as object), CORPUS: {} }) as unknown as Env;
 
   it("returns the recent rejections (most-recent-first) plus the quarantine set", async () => {

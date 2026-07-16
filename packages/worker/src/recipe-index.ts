@@ -22,6 +22,7 @@
 
 import type { Env } from "./env.js";
 import { db } from "./db.js";
+import { visibleSlugs, type Viewer } from "./visibility.js";
 import type { RecipeIndex, IndexedRecipe } from "./recipes.js";
 
 /** Scalar columns reconstructed verbatim (column name === frontmatter field). */
@@ -100,20 +101,31 @@ function rowToRecipe(row: RecipeRow): IndexedRecipe {
 }
 
 /**
- * Load the whole shared recipe index from D1 and rebuild the `RecipeIndex` map
- * (slug → reconstructed objective entry). A drop-in for the old whole-blob load:
- * `search_recipes` still filters in JS over this, leaving the overlay/last_cooked
- * merge and `filterRecipes` untouched. An EMPTY table is a valid empty corpus
- * (`{}`); an UNREADABLE table throws a `storage_error` (mapped by db()), which the
- * caller surfaces as `index_unavailable`.
+ * Load the VIEWER'S recipe index from D1 and rebuild the `RecipeIndex` map (slug →
+ * reconstructed objective entry), applied through the visibility lens: the whole-table
+ * read is intersected with `visibleSlugs(env, viewer)` (one indexed query — the shared
+ * lens enforcement point, src/visibility.ts), so every whole-index consumer (search,
+ * cookbook browse, propose pools, trending, picked-for-you, member /api index) inherits
+ * the lens by construction. The `viewer` is REQUIRED — no default — so no consumer can
+ * read the corpus without choosing a lens position (member or anonymous). Derivation
+ * pipelines are corpus-wide by design and read the `recipes` table directly, never
+ * through this. `search_recipes` still filters in JS over the result, leaving the
+ * overlay/last_cooked merge and `filterRecipes` untouched. An EMPTY table (or a fully
+ * out-of-lens corpus) is a valid empty index (`{}`); an UNREADABLE table throws a
+ * `storage_error` (mapped by db()), which the caller surfaces as `index_unavailable`.
  */
-export async function loadRecipeIndex(env: Env): Promise<RecipeIndex> {
+export async function loadRecipeIndex(env: Env, viewer: Viewer): Promise<RecipeIndex> {
   // description is JOINed from recipe_derived (it left the `recipes` table in 0013).
-  const rows = await db(env).all<RecipeRow>(
-    "SELECT r.*, d.description AS description FROM recipes r LEFT JOIN recipe_derived d ON d.slug = r.slug",
-  );
+  const [rows, visible] = await Promise.all([
+    db(env).all<RecipeRow>(
+      "SELECT r.*, d.description AS description FROM recipes r LEFT JOIN recipe_derived d ON d.slug = r.slug",
+    ),
+    visibleSlugs(env, viewer),
+  ]);
   const index: RecipeIndex = {};
-  for (const row of rows) index[row.slug] = rowToRecipe(row);
+  for (const row of rows) {
+    if (visible.has(row.slug)) index[row.slug] = rowToRecipe(row);
+  }
   return index;
 }
 

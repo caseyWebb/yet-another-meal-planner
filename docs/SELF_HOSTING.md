@@ -197,7 +197,21 @@ The helper is a satellite-package surface (not `/admin`), so you watch it from i
 
 ## 9. Cookbook
 
-The cookbook is served by the **Worker itself** at `<your-domain>/cookbook` — a read-only recipe site built on the fly from the D1 index (the list) and the R2 corpus (the bodies). There's **nothing to set up**: no GitHub Pages, no GitHub Pro, no separate build. It's live once the Worker is deployed, and `recipe_site_url` resolves `<origin>/cookbook` automatically so onboarding can point members at the full corpus.
+The cookbook is served by the **Worker itself** at `<your-domain>/cookbook` — a read-only recipe site built on the fly from the D1 index (the list) and the R2 corpus (the bodies). There's **nothing to set up**: no GitHub Pages, no GitHub Pro, no separate build. It's live once the Worker is deployed, and `recipe_site_url` resolves `<origin>/cookbook` automatically so onboarding can point members at the collection. What the public site shows follows your **deployment profile** (next section): the full corpus on the default self-hosted profile, the curated tier only on SaaS.
+
+## The deployment profile (self-hosted vs SaaS)
+
+Your Worker runs one of two long-lived **deployment profiles**, stored in D1 (`operator_config.deployment_profile`) and controlled from the admin **Config** area's Deployment card (backed by `GET`/`PUT /admin/api/deployment-config`). Unset means **self-hosted** — the default, and the right profile for a friend-group deployment — so there's nothing to configure and nothing changes for an existing deployment.
+
+- **`self-hosted`** (the default): every household sees the whole shared corpus — recipe visibility is implicit all-to-all, computed at read time and never stored — and the public cookbook at `/cookbook` serves the full corpus. This is the experience the rest of this guide describes.
+- **`saas`**: each household's cookbook is scoped to what it imported, what its friend households imported, and a **curated tier** — a product-maintained starter set, so a brand-new household never lands on an empty cookbook (a household can hide the tier from its Preferences). The public `/cookbook` narrows to the curated tier only, and a recipe URL outside a viewer's scope 404s exactly like a nonexistent one.
+
+**Flipping is guarded** on the card (the Worker enforces both guards on the config write path):
+
+- **self-hosted → SaaS** asks for an explicit confirm before it proceeds: the implicit "everyone sees everything" edges disappear immediately — households stop seeing each other's recipes until real friendships exist — and the public site narrows to the curated tier.
+- **SaaS → self-hosted is refused** (the consent-inversion guard — no confirm overrides it) while more than one household owns a non-empty cookbook of its own: flipping to all-to-all would publish every household's cookbook to every other household without their consent. The flip is possible only while at most one household holds recipes of its own (curated grants don't count).
+
+**The curated source knob** (the same card, `operator_config.curated_source_url`) names the public feed the curated tier is pulled from — consumed on the SaaS profile only. Leave it unset to follow the **product-maintained default feed** (curated updates flow to your deployment automatically); point it at another feed URL to fork the curated experience; clear it to the empty value to disable curated intake entirely. Curated intake rides the ordinary discovery sweep under its existing rotation/volume/dedup bounds, so it can never starve your members' own feeds.
 
 ## Taking upstream updates
 

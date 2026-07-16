@@ -105,6 +105,7 @@ function makeDeps(opts: FakeOpts) {
       calls.imported.push(slug);
       return slug;
     },
+    grantCurated: async () => {},
     recordMatches: async (slug, attrs) => {
       calls.matches[slug] = attrs;
     },
@@ -186,7 +187,7 @@ describe("runDiscoverySweep", () => {
     const res = await runDiscoverySweep(deps, CONFIG);
     expect(res.imported).toBe(1);
     expect(calls.imported).toEqual(["ragu"]);
-    expect(calls.matches["ragu"]).toEqual([{ tenant: "casey", score: 1 }]);
+    expect(calls.matches["ragu"]).toEqual([{ tenant: "casey", member: "casey", score: 1 }]);
     expect(calls.logs.at(-1)).toMatchObject({ outcome: "imported", slug: "ragu" });
   });
 
@@ -336,7 +337,7 @@ describe("runDiscoverySweep", () => {
     });
     const res = await runDiscoverySweep(deps, CONFIG);
     expect(res.imported).toBe(1);
-    expect(calls.matches["spicy-stew"]).toEqual([{ tenant: "alex", score: 1 }]);
+    expect(calls.matches["spicy-stew"]).toEqual([{ tenant: "alex", member: "alex", score: 1 }]);
   });
 
   it("defers imports past the rate cap (no wasted classify on the deferred ones)", async () => {

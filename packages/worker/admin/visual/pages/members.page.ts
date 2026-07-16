@@ -30,17 +30,27 @@ export class MembersPage extends AdminPage {
     return dialog;
   }
 
-  /** A member's roster row (the island renders rows as item links to the detail page). */
+  /** A household's roster row (compact single-member row OR a group's header row). */
   rosterRow(id: string): Locator {
-    return this.page.locator("a.item-link", { hasText: `@${id}` }).first();
+    return this.page.locator(`[data-testid="household-row"][data-household="${id}"]`);
   }
 
-  /** A member row's per-row actions menu trigger (the ⋯ button inside the row link). */
+  /** A multi-member household's GROUP (header + indented member rows). */
+  householdGroup(id: string): Locator {
+    return this.page.locator(`[data-testid="household-group"][data-household="${id}"]`);
+  }
+
+  /** One member row inside a household group, by handle. */
+  memberRow(handle: string): Locator {
+    return this.page.locator(`[data-testid="member-row"][data-member="${handle}"]`);
+  }
+
+  /** A compact row's actions menu trigger (single-member household: both affordance sets). */
   rowMenuTrigger(id: string): Locator {
     return this.rosterRow(id).getByRole("button", { name: "Member actions" });
   }
 
-  /** Open a member's per-row actions menu; returns the opened (portaled) menu. */
+  /** Open a compact household row's actions menu; returns the opened (portaled) menu. */
   async openRowMenu(id: string): Promise<Locator> {
     await this.rowMenuTrigger(id).click();
     const menu = this.page.getByRole("menu");
@@ -48,8 +58,29 @@ export class MembersPage extends AdminPage {
     return menu;
   }
 
-  /** A menu item by its accessible name ("Rotate invite" / "Revoke invite" | "Revoke access"). */
-  menuItem(name: string): Locator {
+  /** Open a multi-member household HEADER's actions menu (household-level actions). */
+  async openHouseholdMenu(id: string): Promise<Locator> {
+    await this.rosterRow(id).getByRole("button", { name: "Household actions" }).click();
+    const menu = this.page.getByRole("menu");
+    await expect(menu).toBeVisible();
+    return menu;
+  }
+
+  /** Open a grouped MEMBER row's actions menu (member-level actions). */
+  async openMemberMenu(handle: string): Promise<Locator> {
+    await this.memberRow(handle).getByRole("button", { name: "Member actions" }).click();
+    const menu = this.page.getByRole("menu");
+    await expect(menu).toBeVisible();
+    return menu;
+  }
+
+  /** A stat tile by label (the summary row above the roster). */
+  statTile(label: string): Locator {
+    return this.page.locator(".stat-card", { hasText: label });
+  }
+
+  /** A menu item by its accessible name ("Rotate invite" / "Revoke member" / "Purge household"…). */
+  menuItem(name: string | RegExp): Locator {
     return this.page.getByRole("menuitem", { name });
   }
 
@@ -73,9 +104,10 @@ export class MembersPage extends AdminPage {
     await expect(this.page.locator("body")).not.toHaveCSS("pointer-events", "none");
   }
 
-  /** The revoke confirmation (the shared Radix AlertDialog). */
-  revokeDialog(): Locator {
-    return this.page.getByRole("alertdialog", { name: "Revoke member" });
+  /** A revoke confirmation (the shared Radix AlertDialog) by its split-lifecycle name:
+   *  "Purge household" (whole tenant) or "Revoke member" (single member). */
+  revokeDialog(name: "Purge household" | "Revoke member" = "Purge household"): Locator {
+    return this.page.getByRole("alertdialog", { name });
   }
 
   memberDetail(id: string): MemberDetailPage {

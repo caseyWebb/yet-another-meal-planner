@@ -5,8 +5,13 @@ import {
   recipeSlugForSource,
   recipeMeta,
 } from "../src/recipe-index.js";
+import { memberViewer } from "../src/visibility.js";
 import { ToolError } from "../src/errors.js";
 import type { Env } from "../src/env.js";
+
+/** The member lens position the reconstruction tests read through (the fake grants
+ *  every row to this household, so the lens passes everything — see fakeEnv). */
+const VIEWER = memberViewer("t");
 
 // The vitest harness has no real D1 binding, so we exercise the row↔RecipeIndex
 // mapping against a fake D1Database (same approach as test/db.test.ts). `all`/`first`
@@ -29,7 +34,11 @@ function fakeEnv(
         calls.push({ sql, binds });
         if (opts.throwOnAll) throw new Error("no such table: recipes");
         let out = rows;
-        if (/WHERE source_url IS NOT NULL/.test(sql)) {
+        if (/FROM recipe_imports/.test(sql)) {
+          // The lens read: every row is granted (a converged, fully-attached corpus),
+          // so these tests keep exercising the row↔RecipeIndex reconstruction.
+          out = rows.map((r) => ({ recipe: r.slug }));
+        } else if (/WHERE source_url IS NOT NULL/.test(sql)) {
           out = rows.filter((r) => r.source_url != null);
         } else if (/slug IN \(/.test(sql)) {
           out = rows.filter((r) => binds.includes(r.slug));
@@ -38,6 +47,7 @@ function fakeEnv(
       },
       async first<T>() {
         calls.push({ sql, binds });
+        if (/operator_config/.test(sql)) return null as T | null; // unset → self-hosted
         const hit = rows.find((r) => r.source_url === binds[0]);
         return (hit ? { slug: hit.slug } : null) as T | null;
       },
@@ -96,7 +106,7 @@ describe("loadRecipeIndex", () => {
         extra: JSON.stringify({ style: "sheet-pan", servings: 2 }),
       }),
     ]);
-    const index = await loadRecipeIndex(env);
+    const index = await loadRecipeIndex(env, VIEWER);
     expect(index["salmon-with-rice"]).toEqual({
       slug: "salmon-with-rice",
       title: "Salmon with Rice",
@@ -119,20 +129,20 @@ describe("loadRecipeIndex", () => {
 
   it("an empty table is a valid empty corpus ({}), not an error", async () => {
     const { env } = fakeEnv([]);
-    expect(await loadRecipeIndex(env)).toEqual({});
+    expect(await loadRecipeIndex(env, VIEWER)).toEqual({});
   });
 
   it("an unreadable table throws a storage_error (caller remaps to index_unavailable)", async () => {
     const { env } = fakeEnv([], { throwOnAll: true });
-    await expect(loadRecipeIndex(env)).rejects.toBeInstanceOf(ToolError);
-    await expect(loadRecipeIndex(env)).rejects.toMatchObject({ code: "storage_error" });
+    await expect(loadRecipeIndex(env, VIEWER)).rejects.toBeInstanceOf(ToolError);
+    await expect(loadRecipeIndex(env, VIEWER)).rejects.toMatchObject({ code: "storage_error" });
   });
 
   it("a column always wins over a stale copy in extra", async () => {
     const { env } = fakeEnv([
       ROW({ slug: "x", title: "Real", extra: JSON.stringify({ title: "Stale" }) }),
     ]);
-    const index = await loadRecipeIndex(env);
+    const index = await loadRecipeIndex(env, VIEWER);
     expect(index["x"].title).toBe("Real");
   });
 });

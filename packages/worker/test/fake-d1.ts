@@ -53,6 +53,8 @@ const PK: Record<string, string[]> = {
   vibe_satisfaction: ["tenant", "cooking_log_id", "vibe_id"],
   pending_proposals: ["tenant", "id"],
   webauthn_credentials: ["credential_id"],
+  members: ["id"],
+  recipe_imports: ["recipe", "tenant"], // visibility grants (migration 0059)
   // walled-source ingest (recipe-ingestion)
   ingest_keys: ["id"],
   ingest_candidates: ["id"],
@@ -86,6 +88,7 @@ const GLOBAL_TABLES = new Set([
   "ingest_candidates",
   "ingest_pushes",
   "job_runs",
+  "recipe_imports",
 ]);
 
 export function fakeD1(
@@ -102,6 +105,23 @@ export function fakeD1(
     ...(init.tables ?? {}),
   };
   const known = new Set(init.recipes ?? []);
+  // The visibility lens reads `recipe_imports` (migration 0059). Unless a test seeds
+  // its own grants, every known/seeded recipe is granted to a placeholder household —
+  // the converged post-reconcile state, so self-hosted lens reads pass everything
+  // (today's behavior, the D9 promise these tests pin).
+  if (!tables.recipe_imports) {
+    const grantSlugs = new Set<string>(known);
+    for (const r of tables.recipes ?? []) {
+      if (typeof r.slug === "string") grantSlugs.add(r.slug);
+    }
+    tables.recipe_imports = [...grantSlugs].map((slug) => ({
+      recipe: slug,
+      tenant: "seed-household",
+      member: "seed-household",
+      via: "agent",
+      imported_at: "2026-01-01",
+    }));
+  }
   const batches: { sql: string; binds: unknown[] }[][] = [];
 
   const tableOf = (sql: string): string | null => {
@@ -125,6 +145,14 @@ export function fakeD1(
     if (/\bdepartment IS NULL/i.test(sql)) out = out.filter((r) => r.department == null);
     if (/status = \?2/i.test(sql)) eq("status", 2);
     if (/\brecipe = \?1/i.test(sql)) eq("recipe", 1);
+    // The visibility lens's self-hosted arm (src/visibility.ts): any non-curated grant
+    // admits. fake-d1 tests never flip to SaaS (no operator_config row → self-hosted),
+    // so the single <> arm is the only lens WHERE this fake must honor.
+    const tenantNe = /i\.tenant <> \?(\d+)/i.exec(sql);
+    if (tenantNe) {
+      const n = Number(tenantNe[1]);
+      out = out.filter((r) => r.tenant !== binds[n - 1]);
+    }
     if (/\brecipe = \?2/i.test(sql)) eq("recipe", 2);
     if (/LOWER\(recipe\) = LOWER\(\?2\)/i.test(sql)) {
       out = out.filter((r) => String(r.recipe).toLowerCase() === String(binds[1]).toLowerCase());
@@ -132,6 +160,8 @@ export function fakeD1(
     if (/\bstore = \?1/i.test(sql)) eq("store", 1);
     if (/\bslug = \?1/i.test(sql)) eq("slug", 1);
     if (/credential_id = \?1/i.test(sql)) eq("credential_id", 1);
+    // Member-scoped credential/identity reads (member-identity-split).
+    if (/\bmember = \?2/i.test(sql)) eq("member", 2);
     if (/key_hash = \?1/i.test(sql)) eq("key_hash", 1);
     if (/status = 'active'/i.test(sql)) out = out.filter((r) => r.status === "active");
     if (/\blocation_id = \?1/i.test(sql)) eq("location_id", 1);
@@ -199,9 +229,26 @@ export function fakeD1(
       });
     }
     if (/\bid = \?2/i.test(sql)) eq("id", 2);
+    // Recipe-note tiers (note-visibility-tiers): the fake only ever sees the
+    // SELF-HOSTED member shape (no operator_config row → self-hosted → the friends arm
+    // is `1 = 1`), where the predicate reduces to own-notes OR effective-tier ≠
+    // 'private'; and the anonymous public-only read. The effective tier mirrors the
+    // read SQL's COALESCE (NULL tier heals via the private mapping). The REAL SQL
+    // semantics (SaaS friend seam, members join) are exercised on migrated SQLite.
+    const effTier = (r: Record<string, unknown>): string =>
+      r.tier === "public" || r.tier === "friends" || r.tier === "private"
+        ? (r.tier as string)
+        : r.private === 1
+          ? "private"
+          : "friends";
+    if (/COALESCE\(n\.tier,/i.test(sql) && /= 'public'\s*$/i.test(sql.trim())) {
+      out = out.filter((r) => effTier(r) === "public");
+    } else if (/n\.author = \?2 OR COALESCE\(n\.tier,/i.test(sql)) {
+      out = out.filter((r) => r.author === binds[1] || effTier(r) !== "private");
+    }
     // Attributed notes: privacy rule (private=0 OR author=?2), and self-scoped
     // findOwnNote (author=?2 AND created_at=?3).
-    if (/\(private = 0 OR author = \?2\)/i.test(sql)) {
+    else if (/\(private = 0 OR author = \?2\)/i.test(sql)) {
       out = out.filter((r) => r.private === 0 || r.author === binds[1]);
     } else if (/\bauthor = \?2/i.test(sql)) {
       eq("author", 2);

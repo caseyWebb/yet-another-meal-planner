@@ -11,6 +11,7 @@
 // not a secret.
 
 import type { Env } from "./env.js";
+import { normalizeTenantId } from "./tenant.js";
 
 const APPROVAL_PREFIX = "authz:";
 /** Window to complete the cross-device handoff — mint on `GET /authorize`, approve, poll, done. */
@@ -19,13 +20,16 @@ const APPROVAL_TTL_S = 10 * 60;
 const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 const CODE_LEN = 6;
 
-/** What `authz:<ref>` stores. `oauth` is the base64 `AuthRequest` the provider gave us on GET. */
+/** What `authz:<ref>` stores. `oauth` is the base64 `AuthRequest` the provider gave us on GET.
+ *  `tenant`/`member` are bound on approval; a record written before the member-identity split
+ *  carries no `member` and resolves to the founding member (the legacy-defaulting rule). */
 export interface ApprovalRecord {
   oauth: string;
   clientName: string;
   code: string;
   status: "pending" | "approved";
   tenant?: string;
+  member?: string;
 }
 
 /** The client-facing view of a pending approval (never leaks the stored OAuth request). */
@@ -80,23 +84,24 @@ export async function viewApproval(env: Env, ref: string): Promise<ApprovalView 
 }
 
 /**
- * Bind a tenant to a PENDING reference (the member approved on `/connect`). Returns `not_found` for
- * an unknown/expired ref. Approval is pending-only and one-shot: once a reference is approved it can
- * NOT be re-bound — a re-approve by the SAME member is an idempotent `ok`, and any other member is
- * told `not_found` (no re-bind of the confused-deputy kind, and no oracle, even though `ref` is
- * already a 256-bit unguessable value).
+ * Bind the approving `(tenant, member)` pair to a PENDING reference (the member approved on
+ * `/connect`). Returns `not_found` for an unknown/expired ref. Approval is pending-only and
+ * one-shot: once a reference is approved it can NOT be re-bound — a re-approve by the SAME
+ * member is an idempotent `ok`, and any other member is told `not_found` (no re-bind of the
+ * confused-deputy kind, and no oracle, even though `ref` is already a 256-bit unguessable value).
  */
 export async function approveApproval(
   env: Env,
   ref: string,
   tenant: string,
+  member: string,
 ): Promise<"ok" | "not_found"> {
   const record = await readApproval(env, ref);
   if (!record) return "not_found";
   if (record.status === "approved") {
-    return record.tenant === tenant ? "ok" : "not_found";
+    return record.tenant === tenant && (record.member ?? record.tenant) === member ? "ok" : "not_found";
   }
-  const updated: ApprovalRecord = { ...record, status: "approved", tenant };
+  const updated: ApprovalRecord = { ...record, status: "approved", tenant, member };
   // Re-put with the same short window; the record stays single-use (claimed = deleted on completion).
   await env.TENANT_KV.put(`${APPROVAL_PREFIX}${ref}`, JSON.stringify(updated), { expirationTtl: APPROVAL_TTL_S });
   return "ok";
@@ -104,13 +109,18 @@ export async function approveApproval(
 
 /**
  * Claim an approved reference for OAuth completion: if approved, DELETE it (the claim) and return
- * the stored OAuth request + tenant so the caller completes the grant exactly once. Returns null
- * for pending/unknown/expired. (KV has no CAS, so two simultaneous polls could both claim; the
- * one-user-polling flow makes that window negligible — an accepted trade-off, like other KV state.)
+ * the stored OAuth request + the bound `(tenant, member)` pair so the caller completes the grant
+ * exactly once. A pre-split record with no `member` yields the founding member (legacy-defaulting).
+ * Returns null for pending/unknown/expired. (KV has no CAS, so two simultaneous polls could both
+ * claim; the one-user-polling flow makes that window negligible — an accepted trade-off, like
+ * other KV state.)
  */
-export async function claimApproved(env: Env, ref: string): Promise<{ oauth: string; tenant: string } | null> {
+export async function claimApproved(
+  env: Env,
+  ref: string,
+): Promise<{ oauth: string; tenant: string; member: string } | null> {
   const record = await readApproval(env, ref);
   if (!record || record.status !== "approved" || !record.tenant) return null;
   await env.TENANT_KV.delete(`${APPROVAL_PREFIX}${ref}`);
-  return { oauth: record.oauth, tenant: record.tenant };
+  return { oauth: record.oauth, tenant: record.tenant, member: record.member ?? normalizeTenantId(record.tenant) };
 }

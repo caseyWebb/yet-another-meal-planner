@@ -5,6 +5,9 @@
 
 import { db } from "./db.js";
 import { ToolError } from "./errors.js";
+import { assertPublicHttpUrl } from "./url.js";
+import { loadDeploymentProfile, type DeploymentProfile } from "./deployment.js";
+import { CURATED_TENANT } from "./visibility.js";
 import type { Env } from "./env.js";
 
 // --- Types ------------------------------------------------------------------
@@ -185,6 +188,162 @@ export function validateOperatorConfig(patch: Record<string, unknown>, opts: Val
     }
   }
   return null;
+}
+
+// --- Deployment profile + curated source (deployment-profiles-and-visibility-lens) ---
+//
+// Two more sparse columns on the same singleton (migration 0059), deliberately OUTSIDE
+// the numeric `OperatorConfig` knobs above: they are read/written through their own
+// load/save pair because the profile write carries FLIP GUARDS (below) that the plain
+// ranking/flyer PUT must never bypass. `loadDeploymentProfile` (src/deployment.ts)
+// remains the ONE accessor for the resolved profile value.
+
+/**
+ * The compiled default curated source: the product-maintained public curated feed
+ * (published through the product's public data-repo channel — the same channel the
+ * plugin marketplace uses). Operators inherit updates without action (NULL-over-default
+ * idiom); repoint via the admin Config card to fork the experience, or clear to disable
+ * curated intake entirely.
+ */
+export const DEFAULT_CURATED_SOURCE_URL =
+  "https://raw.githubusercontent.com/caseyWebb/yet-another-meal-planner-deployment/main/curated-feed.xml";
+
+/** How the deployment's curated source is configured. */
+export type CuratedSourceState = "default" | "custom" | "disabled";
+
+/** The admin Config card's deployment slice: the resolved profile (+ whether it was
+ *  explicitly written) and the EFFECTIVE curated source (null = disabled). */
+export interface DeploymentConfig {
+  profile: DeploymentProfile;
+  /** False while the column is NULL (the unset-defaults-to-self-hosted state). */
+  profileSet: boolean;
+  /** The URL the sweep will actually poll, or null when curated intake is disabled. */
+  curatedSourceUrl: string | null;
+  curatedSourceState: CuratedSourceState;
+  /** The compiled default, so the card can render "not yet overridden". */
+  curatedSourceDefault: string;
+}
+
+interface DeploymentRow {
+  deployment_profile: string | null;
+  curated_source_url: string | null;
+}
+
+const DEPLOYMENT_SELECT = "SELECT deployment_profile, curated_source_url FROM operator_config WHERE id = 1";
+
+/** Stored curated column → effective URL + state. NULL = compiled default; empty string
+ *  = disabled (an explicit clear must be distinguishable from never-configured, or the
+ *  NULL-over-default idiom would resurrect the default); anything else = the override. */
+function curatedFromColumn(stored: string | null): { url: string | null; state: CuratedSourceState } {
+  if (stored === null) return { url: DEFAULT_CURATED_SOURCE_URL, state: "default" };
+  if (stored.trim() === "") return { url: null, state: "disabled" };
+  return { url: stored, state: "custom" };
+}
+
+export async function loadDeploymentConfig(env: Env): Promise<DeploymentConfig> {
+  const row = await db(env).first<DeploymentRow>(DEPLOYMENT_SELECT);
+  const curated = curatedFromColumn(row?.curated_source_url ?? null);
+  return {
+    profile: row?.deployment_profile === "saas" ? "saas" : "self-hosted",
+    profileSet: row?.deployment_profile === "saas" || row?.deployment_profile === "self-hosted",
+    curatedSourceUrl: curated.url,
+    curatedSourceState: curated.state,
+    curatedSourceDefault: DEFAULT_CURATED_SOURCE_URL,
+  };
+}
+
+/** A deployment-config write: absent fields are untouched. `curatedSourceUrl` semantics
+ *  mirror the stored column: a URL repoints, `""` disables, `null` resets to the
+ *  compiled default. */
+export interface DeploymentConfigPatch {
+  profile?: DeploymentProfile;
+  curatedSourceUrl?: string | null;
+}
+
+/**
+ * The PROFILE FLIP GUARDS (shared-corpus: "profile flips SHALL be guarded at the config
+ * write path"). Returns a structured error — and the caller writes NOTHING — or null:
+ *
+ *   - self-hosted → SaaS: allowed only with an explicit `confirm` (the
+ *     validate-plus-confirm idiom above). The copy states the consequence: implicit
+ *     all-to-all edges disappear, households immediately stop seeing each other's
+ *     recipes, and the public /cookbook narrows to the curated tier.
+ *   - SaaS → self-hosted: REFUSED (confirm cannot override) unless at most ONE
+ *     household owns a non-empty own cookbook (≥1 non-curated `recipe_imports` row) —
+ *     the consent-inversion guard: flipping to implicit all-to-all would publish every
+ *     household's cookbook to every other household. Counting own-cookbook grants only
+ *     over-refuses, never over-permits (a mid-reconcile deployment can only grow the count).
+ *
+ * A no-op write (next === current) passes both guards. Async because the inversion
+ * guard needs a D1 count — it runs in the admin operation, not the pure validator.
+ */
+export async function validateProfileFlip(
+  env: Env,
+  next: DeploymentProfile,
+  opts: { confirm?: boolean } = {},
+): Promise<ToolError | null> {
+  const current = await loadDeploymentProfile(env);
+  if (next === current) return null;
+  if (next === "saas") {
+    if (opts.confirm === true) return null;
+    return new ToolError(
+      "validation_failed",
+      "Flipping to the SaaS profile ends implicit all-to-all visibility immediately: households stop seeing " +
+        "each other's recipes (until real friendships exist), and the public /cookbook site narrows to the " +
+        "curated tier — pass confirm:true to proceed",
+      { field: "deployment_profile", needsConfirm: true },
+    );
+  }
+  // next === "self-hosted": the consent-inversion guard.
+  const row = await db(env).first<{ n: number }>(
+    "SELECT COUNT(DISTINCT tenant) AS n FROM recipe_imports WHERE tenant <> ?1",
+    CURATED_TENANT,
+  );
+  const households = row?.n ?? 0;
+  if (households > 1) {
+    return new ToolError(
+      "conflict",
+      `Refused by the consent-inversion guard: ${households} households own non-empty cookbooks, and flipping to ` +
+        "self-hosted would publish every household's cookbook to every other household. The profile remains \"saas\".",
+      { guard: "consent_inversion", households },
+    );
+  }
+  return null;
+}
+
+/** Write the deployment-config columns (sparse; the numeric-knob columns are untouched).
+ *  Callers run `validateProfileFlip` FIRST — this is the raw write. A non-empty
+ *  `curatedSourceUrl` must be a public http(s) URL (the feed-url bar). */
+export async function saveDeploymentConfig(env: Env, patch: DeploymentConfigPatch): Promise<void> {
+  if (typeof patch.curatedSourceUrl === "string" && patch.curatedSourceUrl.trim() !== "") {
+    try {
+      assertPublicHttpUrl(patch.curatedSourceUrl.trim());
+    } catch (e) {
+      // The boundary rule: an unsafe URL is a structured validation error, never a raw throw.
+      throw new ToolError(
+        "validation_failed",
+        `curated_source_url must be a public http(s) URL: ${e instanceof Error ? e.message : String(e)}`,
+        { field: "curated_source_url" },
+      );
+    }
+  }
+  const existing = await db(env).first<DeploymentRow>(DEPLOYMENT_SELECT);
+  const merged = {
+    deployment_profile: patch.profile ?? existing?.deployment_profile ?? null,
+    curated_source_url:
+      patch.curatedSourceUrl === undefined
+        ? (existing?.curated_source_url ?? null)
+        : patch.curatedSourceUrl === null
+          ? null
+          : patch.curatedSourceUrl.trim(),
+  };
+  await db(env).run(
+    "INSERT INTO operator_config (id, deployment_profile, curated_source_url) VALUES (1, ?1, ?2) " +
+      "ON CONFLICT(id) DO UPDATE SET deployment_profile = excluded.deployment_profile, " +
+      "curated_source_url = excluded.curated_source_url",
+    merged.deployment_profile,
+    merged.curated_source_url,
+  );
 }
 
 export function parseOperatorConfigPatch(body: Record<string, unknown>): Partial<OperatorConfig> {

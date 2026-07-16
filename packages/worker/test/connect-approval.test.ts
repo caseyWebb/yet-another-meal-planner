@@ -24,12 +24,12 @@ describe("connect-approval (cross-device approval references)", () => {
     expect(await claimApproved(e, ref)).toBeNull(); // not approved → nothing to complete
   });
 
-  it("binds a tenant on approval; claim returns oauth+tenant exactly once (single-use)", async () => {
+  it("binds the approving (tenant, member) pair; claim returns oauth+pair exactly once (single-use)", async () => {
     const e = env(memKv());
     const { ref } = await mintApproval(e, OAUTH_B64, "Claude");
-    expect(await approveApproval(e, ref, "casey")).toBe("ok");
+    expect(await approveApproval(e, ref, "casey", "casey")).toBe("ok");
     expect((await viewApproval(e, ref))?.status).toBe("approved");
-    expect(await claimApproved(e, ref)).toEqual({ oauth: OAUTH_B64, tenant: "casey" });
+    expect(await claimApproved(e, ref)).toEqual({ oauth: OAUTH_B64, tenant: "casey", member: "casey" });
     // A second poll (double claim) yields nothing and the reference is gone.
     expect(await claimApproved(e, ref)).toBeNull();
     expect(await viewApproval(e, ref)).toBeNull();
@@ -37,7 +37,7 @@ describe("connect-approval (cross-device approval references)", () => {
 
   it("an unknown/expired ref is not_found on approve and null on view/claim", async () => {
     const e = env(memKv());
-    expect(await approveApproval(e, "nope", "casey")).toBe("not_found");
+    expect(await approveApproval(e, "nope", "casey", "casey")).toBe("not_found");
     expect(await viewApproval(e, "nope")).toBeNull();
     expect(await claimApproved(e, "nope")).toBeNull();
   });
@@ -45,11 +45,24 @@ describe("connect-approval (cross-device approval references)", () => {
   it("approval is pending-only and one-shot: a different member can't re-bind an approved ref", async () => {
     const e = env(memKv());
     const { ref } = await mintApproval(e, OAUTH_B64, "Claude");
-    expect(await approveApproval(e, ref, "casey")).toBe("ok");
-    // Re-approve by the SAME member is idempotent; a DIFFERENT member is refused with no re-bind.
-    expect(await approveApproval(e, ref, "casey")).toBe("ok");
-    expect(await approveApproval(e, ref, "mallory")).toBe("not_found");
-    // The binding is unchanged — the claim still yields casey.
-    expect(await claimApproved(e, ref)).toEqual({ oauth: OAUTH_B64, tenant: "casey" });
+    expect(await approveApproval(e, ref, "casey", "casey")).toBe("ok");
+    // Re-approve by the SAME member is idempotent; a DIFFERENT identity is refused with no
+    // re-bind — another tenant, or another member of the SAME tenant.
+    expect(await approveApproval(e, ref, "casey", "casey")).toBe("ok");
+    expect(await approveApproval(e, ref, "mallory", "mallory")).toBe("not_found");
+    expect(await approveApproval(e, ref, "casey", "m2")).toBe("not_found");
+    // The binding is unchanged — the claim still yields casey's pair.
+    expect(await claimApproved(e, ref)).toEqual({ oauth: OAUTH_B64, tenant: "casey", member: "casey" });
+  });
+
+  it("a PRE-SPLIT approved record (no member field) claims as the founding member (D2 rule)", async () => {
+    const kv = memKv();
+    const e = env(kv);
+    await kv.put(
+      "authz:legacy-ref",
+      JSON.stringify({ oauth: OAUTH_B64, clientName: "Claude", code: "ABC234", status: "approved", tenant: "Casey" }),
+    );
+    // The defaulted member is the CANONICAL founding id, even off a mixed-case stored tenant.
+    expect(await claimApproved(e, "legacy-ref")).toEqual({ oauth: OAUTH_B64, tenant: "Casey", member: "casey" });
   });
 });

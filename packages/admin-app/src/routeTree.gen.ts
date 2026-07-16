@@ -23,6 +23,7 @@ import { Route as DataGuidanceRouteImport } from './routes/data.guidance'
 import { Route as ConfigRankingRouteImport } from './routes/config.ranking'
 import { Route as ConfigIngestKeysRouteImport } from './routes/config.ingest-keys'
 import { Route as ConfigFlyerRouteImport } from './routes/config.flyer'
+import { Route as ConfigDeploymentRouteImport } from './routes/config.deployment'
 import { Route as MembersIdIndexRouteImport } from './routes/members.$id.index'
 import { Route as DataStoresIndexRouteImport } from './routes/data.stores.index'
 import { Route as DataRecipesIndexRouteImport } from './routes/data.recipes.index'
@@ -100,6 +101,11 @@ const ConfigFlyerRoute = ConfigFlyerRouteImport.update({
   path: '/config/flyer',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ConfigDeploymentRoute = ConfigDeploymentRouteImport.update({
+  id: '/config/deployment',
+  path: '/config/deployment',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const MembersIdIndexRoute = MembersIdIndexRouteImport.update({
   id: '/members/$id/',
   path: '/members/$id/',
@@ -137,6 +143,7 @@ export interface FileRoutesByFullPath {
   '/logs': typeof LogsRoute
   '/normalize': typeof NormalizeRoute
   '/usage': typeof UsageRoute
+  '/config/deployment': typeof ConfigDeploymentRoute
   '/config/flyer': typeof ConfigFlyerRoute
   '/config/ingest-keys': typeof ConfigIngestKeysRoute
   '/config/ranking': typeof ConfigRankingRoute
@@ -159,6 +166,7 @@ export interface FileRoutesByTo {
   '/logs': typeof LogsRoute
   '/normalize': typeof NormalizeRoute
   '/usage': typeof UsageRoute
+  '/config/deployment': typeof ConfigDeploymentRoute
   '/config/flyer': typeof ConfigFlyerRoute
   '/config/ingest-keys': typeof ConfigIngestKeysRoute
   '/config/ranking': typeof ConfigRankingRoute
@@ -182,6 +190,7 @@ export interface FileRoutesById {
   '/logs': typeof LogsRoute
   '/normalize': typeof NormalizeRoute
   '/usage': typeof UsageRoute
+  '/config/deployment': typeof ConfigDeploymentRoute
   '/config/flyer': typeof ConfigFlyerRoute
   '/config/ingest-keys': typeof ConfigIngestKeysRoute
   '/config/ranking': typeof ConfigRankingRoute
@@ -206,6 +215,7 @@ export interface FileRouteTypes {
     | '/logs'
     | '/normalize'
     | '/usage'
+    | '/config/deployment'
     | '/config/flyer'
     | '/config/ingest-keys'
     | '/config/ranking'
@@ -228,6 +238,7 @@ export interface FileRouteTypes {
     | '/logs'
     | '/normalize'
     | '/usage'
+    | '/config/deployment'
     | '/config/flyer'
     | '/config/ingest-keys'
     | '/config/ranking'
@@ -250,6 +261,7 @@ export interface FileRouteTypes {
     | '/logs'
     | '/normalize'
     | '/usage'
+    | '/config/deployment'
     | '/config/flyer'
     | '/config/ingest-keys'
     | '/config/ranking'
@@ -273,6 +285,7 @@ export interface RootRouteChildren {
   LogsRoute: typeof LogsRoute
   NormalizeRoute: typeof NormalizeRoute
   UsageRoute: typeof UsageRoute
+  ConfigDeploymentRoute: typeof ConfigDeploymentRoute
   ConfigFlyerRoute: typeof ConfigFlyerRoute
   ConfigIngestKeysRoute: typeof ConfigIngestKeysRoute
   ConfigRankingRoute: typeof ConfigRankingRoute
@@ -390,6 +403,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ConfigFlyerRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/config/deployment': {
+      id: '/config/deployment'
+      path: '/config/deployment'
+      fullPath: '/config/deployment'
+      preLoaderRoute: typeof ConfigDeploymentRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/members/$id/': {
       id: '/members/$id/'
       path: '/members/$id'
@@ -441,6 +461,7 @@ const rootRouteChildren: RootRouteChildren = {
   LogsRoute: LogsRoute,
   NormalizeRoute: NormalizeRoute,
   UsageRoute: UsageRoute,
+  ConfigDeploymentRoute: ConfigDeploymentRoute,
   ConfigFlyerRoute: ConfigFlyerRoute,
   ConfigIngestKeysRoute: ConfigIngestKeysRoute,
   ConfigRankingRoute: ConfigRankingRoute,

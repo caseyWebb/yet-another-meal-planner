@@ -19,7 +19,7 @@ import { EMBED_DIM } from "../src/embedding.js";
 import { fakeD1 } from "./fake-d1.js";
 import { withServer } from "./tool-harness.js";
 
-const TENANT: Tenant = { id: "casey" };
+const TENANT: Tenant = { id: "casey", member: "casey" };
 
 // The self-contained widget document the ASSETS binding serves in production. In the test we stub
 // ASSETS to return a minimal document carrying the same marker the read asserts.

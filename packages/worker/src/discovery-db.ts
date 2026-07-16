@@ -15,6 +15,7 @@
 
 import { db } from "./db.js";
 import type { Env } from "./env.js";
+import { importGrantStmt } from "./visibility.js";
 import type { Outcome } from "./discovery-sweep.js";
 import type { AcquireReason } from "./recipe-acquire.js";
 
@@ -349,26 +350,38 @@ export async function pruneDiscoveryLog(env: Env, beforeIso: string): Promise<nu
   return r.changes;
 }
 
-/** Persist per-member attribution for an imported recipe (one batch). */
+/**
+ * Persist per-member attribution for an imported recipe AND the matched households'
+ * visibility grants, in ONE batch (discovery-sweep: "a sweep import's visibility grants
+ * ARE its attribution rows made effective"). One write path mints both rows, so
+ * attribution and visibility cannot drift: a candidate confirmed across N households
+ * gets N `discovery_matches` rows and N `recipe_imports` rows together. `via` is the
+ * candidate's import origin (`feed:<url>` / `satellite`); the grant is INSERT OR IGNORE
+ * (first provenance wins), the match row upserts as before. The lens reconcile
+ * (src/lens-reconcile.ts) heals any historical match row missing its grant.
+ */
 export async function recordDiscoveryMatches(
   env: Env,
   slug: string,
-  attributions: Array<{ tenant: string; score: number }>,
+  attributions: Array<{ tenant: string; member: string; score: number }>,
   matchedAt: string,
+  via: string,
 ): Promise<void> {
   if (attributions.length === 0) return;
   const d = db(env);
   await d.batch(
-    attributions.map((a) =>
+    attributions.flatMap((a) => [
       d.prepare(
-        "INSERT INTO discovery_matches (recipe, tenant, score, matched_at) VALUES (?1, ?2, ?3, ?4) " +
-          "ON CONFLICT(recipe, tenant) DO UPDATE SET score = excluded.score, matched_at = excluded.matched_at",
+        "INSERT INTO discovery_matches (recipe, tenant, member, score, matched_at) VALUES (?1, ?2, ?3, ?4, ?5) " +
+          "ON CONFLICT(recipe, tenant) DO UPDATE SET member = excluded.member, score = excluded.score, matched_at = excluded.matched_at",
         slug,
         a.tenant,
+        a.member,
         a.score,
         matchedAt,
       ),
-    ),
+      importGrantStmt(env, { recipe: slug, tenant: a.tenant, member: a.member, via, importedAt: matchedAt }),
+    ]),
   );
 }
 
@@ -403,14 +416,20 @@ export async function stampLastPlanned(env: Env, tenant: string, day: string): P
 }
 
 /**
- * The caller's NEW-FOR-ME recipes: imported after their watermark, attributed to them by the
- * sweep, with no overlay disposition and not yet cooked. The watermark is the LATER of the
- * caller's `last_planned_at` and a fixed-window floor (`floorDay`), so a never-planned member
- * gets at most the window, not the whole backlog. Most-recent-first, bounded.
+ * The caller's NEW-FOR-ME recipes: imported after their watermark, attributed to the
+ * calling MEMBER by the matcher (the `discovery_matches.member` key — attribution is
+ * per-member while visibility is per-household: two reads of the same rows), with no
+ * overlay disposition and not yet cooked. Discovery-attribution-based and unchanged by
+ * visibility events: a recipe newly visible through a friend link has no match row
+ * naming the caller, and curated landings write no match rows at all, so neither can
+ * ever appear here. The watermark is the LATER of the caller's `last_planned_at` and a
+ * fixed-window floor (`floorDay`), so a never-planned member gets at most the window,
+ * not the whole backlog. Most-recent-first, bounded.
  */
 export async function readNewForMe(
   env: Env,
   tenant: string,
+  member: string,
   floorDay: string,
   limit = 20,
 ): Promise<NewForMeRow[]> {
@@ -420,7 +439,7 @@ export async function readNewForMe(
   return db(env).all<NewForMeRow>(
     "SELECT r.slug, r.title, d.description, r.protein, r.cuisine, r.time_total, r.discovered_at " +
       "FROM recipes r " +
-      "JOIN discovery_matches m ON m.recipe = r.slug AND m.tenant = ?1 " +
+      "JOIN discovery_matches m ON m.recipe = r.slug AND m.tenant = ?1 AND m.member = ?4 " +
       "LEFT JOIN recipe_derived d ON d.slug = r.slug " +
       "LEFT JOIN overlay o ON o.recipe = r.slug AND o.tenant = ?1 " +
       "WHERE r.discovered_at IS NOT NULL AND r.discovered_at > ?2 " +
@@ -430,5 +449,6 @@ export async function readNewForMe(
     tenant,
     watermark,
     Math.max(1, Math.min(limit, 100)),
+    member,
   );
 }

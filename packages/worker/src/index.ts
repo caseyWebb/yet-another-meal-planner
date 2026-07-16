@@ -1,16 +1,16 @@
 // Worker entry (multi-tenancy §3). The Worker is an OAuth 2.1 provider: every
-// member connects their own Claude.ai, completes the invite-code authorize flow
+// member connects their own Claude.ai, completes the cross-device authorize flow
 // (authorize.ts), and gets an access token whose grant `props` carry their
-// `tenantId`. @cloudflare/workers-oauth-provider validates the token on `/mcp`,
-// implements `/token` + `/register` + `.well-known` discovery, and hands us the
-// props. We resolve the tenant and build a per-tenant MCP server — stateless, no
-// Durable Objects. The OAuth provider is the gate.
+// `{ tenantId, memberId }` pair. @cloudflare/workers-oauth-provider validates the
+// token on `/mcp`, implements `/token` + `/register` + `.well-known` discovery, and
+// hands us the props. We resolve the identity pair and build a per-tenant MCP
+// server — stateless, no Durable Objects. The OAuth provider is the gate.
 
 import { OAuthProvider } from "@cloudflare/workers-oauth-provider";
 import { createMcpHandler } from "agents/mcp";
 import type { Env } from "./env.js";
 import { buildServer } from "./tools.js";
-import { resolveTenant, directoryFromEnv } from "./tenant.js";
+import { resolveIdentity, directoryFromEnv } from "./tenant.js";
 import { handleOAuth } from "./oauth.js";
 import { handleAuthorize, handleAuthorizeStatus } from "./authorize.js";
 import { handleInboundEmail, rejectReasonFor, type InboundMessage } from "./email.js";
@@ -25,6 +25,7 @@ import { buildDupScanDeps, runDupScanJob } from "./dup-scan.js";
 import { buildFacetDeps, runFacetJob } from "./recipe-classify.js";
 import { buildProjectionDeps, runProjectionJob } from "./recipe-projection.js";
 import { buildDiscoveryDeps, runDiscoverySweepJob, DEFAULT_CONFIG } from "./discovery-sweep.js";
+import { runLensReconcileJob } from "./lens-reconcile.js";
 import { buildNormalizeDeps, runNormalizeJob } from "./ingredient-normalize.js";
 import { buildCategoryDeps, runCategoryJob } from "./ingredient-category.js";
 import { buildReconfirmDeps, runReconfirmJob } from "./ingredient-reconfirm.js";
@@ -49,16 +50,17 @@ import apiApp from "./api/app.js";
 
 /**
  * The gated MCP API. Only reached for `/mcp` requests the provider has already
- * authenticated; `ctx.props` is the grant's props. We re-check `tenantId` against
- * the allowlist and serve a server scoped to that tenant — no tool can reach
- * another tenant's data.
+ * authenticated; `ctx.props` is the grant's props. We resolve the `(tenantId, memberId)`
+ * pair — allowlist re-check + member liveness — and serve a server scoped to that
+ * tenant with that member's attribution; no tool can reach another tenant's data. A
+ * pre-split grant carries `{ tenantId }` only and resolves to the founding member.
  */
 const apiHandler = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    const props = (ctx as unknown as { props?: { tenantId?: string } }).props;
+    const props = (ctx as unknown as { props?: { tenantId?: string; memberId?: string } }).props;
     // recordSeen=true: this IS the MCP hot path, so a successful resolution here is a
     // genuine "tenant is active" signal (best-effort, throttled — see touchTenantActivity).
-    const resolved = await resolveTenant(env, props?.tenantId, directoryFromEnv(env), true);
+    const resolved = await resolveIdentity(env, props?.tenantId, props?.memberId, directoryFromEnv(env), true);
     if ("error" in resolved) {
       return new Response(JSON.stringify(resolved), {
         status: 401,
@@ -308,6 +310,13 @@ export default {
     // Phase 4: the sweep runs after the index + embeddings are fresh (it dedups + matches against
     // them), using the operator's stored config loaded once above.
     const phase4 = await Promise.allSettled([runDiscoverySweepJob(env, buildDiscoveryDeps(env), sweepConfig)]);
+    // Phase 4b: the LENS RECONCILE (deployment-profiles-and-visibility-lens) — attaches
+    // every zero-grant corpus recipe to ≥1 household through the recipe_imports
+    // primitive (attribution-derived, else the operator household) and heals any match
+    // row missing its grant. Runs AFTER the sweep so this tick's imports (which mint
+    // their own grants at creation) are never double-processed mid-write; bounded,
+    // idempotent, and permanent — the guard that keeps the unattached class extinct.
+    const phase4b = await Promise.allSettled([runLensReconcileJob(env)]);
     // Phase 5: the pending_proposals producers — the deterministic profile signal pass (no
     // model), the generative archetype-derivation pass (self-gated to ~daily; names new
     // archetypes on the small model and enqueues add_vibe proposals), the pref-retirement
@@ -324,7 +333,7 @@ export default {
       runPrefRetirementSeedJob(env),
       runDupScanJob(env, buildDupScanDeps(env)),
     ]);
-    const failed = [...phase1, ...phase2, ...phase3, ...phase4, ...phase5].find((r) => r.status === "rejected");
+    const failed = [...phase1, ...phase2, ...phase3, ...phase4, ...phase4b, ...phase5].find((r) => r.status === "rejected");
     if (failed && failed.status === "rejected") throw failed.reason;
   },
 };

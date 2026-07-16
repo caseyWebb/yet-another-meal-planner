@@ -46,14 +46,20 @@ const WIDGET_HTML = `<!DOCTYPE html><html><head><meta name="mcp-widget" content=
  * `widgets/recipe-card.html` path (anything else 404s — the SPA-fallback path is not modeled).
  */
 function testEnv(files: Record<string, string>, assetHtml: string = WIDGET_HTML): Env {
-  const stmt = {
-    bind: () => stmt,
-    all: async () => ({ results: [] }),
-    first: async () => null,
-    run: async () => ({ meta: { changes: 0 } }),
+  const stmtFor = (sql: string) => {
+    const stmt = {
+      bind: () => stmt,
+      all: async () => ({ results: [] }),
+      // The visibility-lens point read passes (the recipe is granted/attached); every
+      // other read is empty (no overlay / last-cooked / derived-description rows, and a
+      // NULL operator_config → the self-hosted profile).
+      first: async () => (sql.includes("recipe_imports") ? { ok: 1 } : null),
+      run: async () => ({ meta: { changes: 0 } }),
+    };
+    return stmt;
   };
   return {
-    DB: { prepare: () => stmt },
+    DB: { prepare: (sql: string) => stmtFor(sql) },
     CORPUS: fakeR2(files).bucket,
     ASSETS: {
       fetch: async (req: Request) => {

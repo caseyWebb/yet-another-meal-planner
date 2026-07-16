@@ -16,7 +16,7 @@
 // No TOOLS/SCHEMAS/D1 delta — band 1 shipped every backing surface (cadence, weekly_budget,
 // meal/members on vibes, the proposals feed).
 import * as React from "react";
-import { Link, createFileRoute } from "@tanstack/react-router";
+import { Link, createFileRoute, getRouteApi } from "@tanstack/react-router";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import {
   Button,
@@ -40,6 +40,7 @@ import {
   NativeSelect,
   Input,
   PageHead,
+  Switch,
   Textarea,
   ToggleChip,
   TokenField,
@@ -61,6 +62,7 @@ import {
 } from "../lib/data";
 import { useProposalConfirm, useVibeAdd, useVibeRemove } from "../lib/mutations";
 import { useOnline } from "../lib/online";
+import { patchPreferences } from "../lib/preferences";
 import { mdToHtml } from "../lib/md";
 import { capitalize, daysSince, relAge } from "../lib/format";
 import type { AisleMapDocument } from "@yamp/contract";
@@ -367,40 +369,6 @@ function EquipmentCard({ owned }: { owned: string[] }) {
 
 // === Preferences tab ==============================================================
 
-/** Merge-patch under If-Match with ONE automatic rebase retry (merge-patches rebase
- *  trivially — the patch IS the intent), then invalidate the profile reads. */
-async function patchPreferences(
-  qc: QueryClient,
-  patch: Record<string, unknown>,
-  storeBoundary = false,
-): Promise<boolean> {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const read = await api.api.profile.preferences.$get().catch(() => null);
-    if (!read?.ok) break;
-    const etag = read.headers.get("etag") ?? "";
-    const res = await api.api.profile.preferences
-      .$patch({ json: { patch } }, { headers: { "If-Match": etag } })
-      .catch(() => null);
-    if (!res) break;
-    if (res.status === 412) continue; // raced — rebase on the fresh read and retry once
-    if (!res.ok) {
-      toast((await apiError(res)).message);
-      return false;
-    }
-    await qc.invalidateQueries({ queryKey: ["profile"] });
-    if (storeBoundary) {
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: ["store-adapters"] }),
-        qc.invalidateQueries({ queryKey: ["grocery", "to-buy", "enriched"] }),
-      ]);
-      window.dispatchEvent(new Event("yamp:store-adapter-changed"));
-    }
-    return true;
-  }
-  toast("Couldn't save preferences — try again");
-  return false;
-}
-
 const AVOID_BASE = ["shellfish", "pork", "cilantro", "mushrooms", "blue cheese"];
 const LIMIT_BASE = ["red meat", "added sugar", "dairy", "fried food"];
 
@@ -411,9 +379,14 @@ const CADENCE_MEALS = [
   ["dinner", "Dinner"],
 ] as const;
 
+const appRoute = getRouteApi("/_app");
+
 function PrefsTab() {
   const profile = useProfile();
   const qc = useQueryClient();
+  // The deployment profile from the shell's whoami loader — gates the SaaS-only
+  // Curated-collection card (self-hosted deployments have no curated tier to hide).
+  const { profile: deployProfile } = appRoute.useLoaderData();
   const prefs = (profile.data?.preferences ?? {}) as Record<string, unknown>;
 
   // The server always exports `cadence` as a { breakfast, lunch, dinner } map (the
@@ -532,10 +505,55 @@ function PrefsTab() {
         </section>
       </section>
 
+      {deployProfile === "saas" ? (
+        <CuratedCard hidden={prefs.curated_hide === true} onPatch={patch} />
+      ) : null}
+
       <StoreCard />
 
       <BrandsCard brands={brands} onPatch={(brandsPatch) => patch({ brands: brandsPatch })} />
     </div>
+  );
+}
+
+/**
+ * The "Curated collection" card (design request #10, Decision 9 — SaaS only): one
+ * household-scoped toggle over `preferences.curated_hide` through the tab's shared
+ * merge-patch path. On = shown (the default; clearing writes `curated_hide: null`, the
+ * merge-patch DELETE); off writes `curated_hide: true` and hides the whole curated tier
+ * from every member of the household. No confirm dialog — the off state carries the
+ * reversibility copy instead (nothing is deleted; rows return on re-enable).
+ */
+function CuratedCard({ hidden, onPatch }: { hidden: boolean; onPatch: (p: Record<string, unknown>) => void }) {
+  return (
+    <section className="card prof-card rounded-xl border bg-card p-6" data-testid="curated-card">
+      <header>
+        <h3>Curated collection</h3>
+        <p>
+          A starter set of recipes we maintain. They're marked in your cookbook; turn this off to hide them
+          for your whole household.
+        </p>
+      </header>
+      <section className="prof-fields">
+        <div className="prof-field">
+          <div className="flex items-center gap-3">
+            <Switch
+              checked={!hidden}
+              aria-label="Show the curated collection"
+              data-testid="curated-toggle"
+              onCheckedChange={(on) => onPatch({ curated_hide: on ? null : true })}
+            />
+            <label>{hidden ? "Hidden" : "Shown"}</label>
+          </div>
+          <p className="prof-help">Applies to everyone in your household</p>
+          {hidden ? (
+            <p className="prof-help" data-testid="curated-reversible">
+              They'll reappear if you turn this back on — nothing is deleted.
+            </p>
+          ) : null}
+        </div>
+      </section>
+    </section>
   );
 }
 

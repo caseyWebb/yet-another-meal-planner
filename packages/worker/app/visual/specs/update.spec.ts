@@ -24,8 +24,15 @@ test("a build skew never prompts on its own — the header only nudges an update
   // appear and, on reload, loop. With no waiting worker there is no `needRefresh`, so
   // the banner must stay absent no matter how many responses skew.
   await page.route("**/api/**", async (route) => {
-    const res = await route.fetch();
-    await route.fulfill({ response: res, headers: { ...res.headers(), "x-app-build": "pw-other-build" } });
+    // Tolerate a request torn down mid-flight (a navigation can dispose the fetched
+    // response before fulfill — e.g. the shell's background people read racing a
+    // client-side route change); an aborted background read is not this test's subject.
+    try {
+      const res = await route.fetch();
+      await route.fulfill({ response: res, headers: { ...res.headers(), "x-app-build": "pw-other-build" } });
+    } catch {
+      await route.abort().catch(() => {});
+    }
   });
 
   await asMember();

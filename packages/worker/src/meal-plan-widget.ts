@@ -37,6 +37,7 @@ import {
 } from "./meal-plan-proposal-tool.js";
 import { readNightVibes } from "./night-vibe-db.js";
 import { loadRecipeIndex } from "./recipe-index.js";
+import { memberViewer } from "./visibility.js";
 
 /** The `ui://` resource the widget is served from; `display_meal_plan._meta.ui.resourceUri` equals this. */
 export const PLAN_PROPOSE_URI = "ui://plan/propose";
@@ -97,7 +98,7 @@ function toRequest(input: ProposeInput, result: ProposeResult): ProposeCardData[
 async function toProposeCardData(env: Env, tenant: Tenant, input: ProposeInput, result: ProposeResult): Promise<ProposeCardData> {
   const [palette, index] = await Promise.all([
     readNightVibes(env, tenant.id).catch(() => []),
-    loadRecipeIndex(env).catch(() => ({})),
+    loadRecipeIndex(env, memberViewer(tenant.id, tenant.member)).catch(() => ({})),
   ]);
   const vibeLabels: Record<string, string> = {};
   for (const v of palette) vibeLabels[v.id] = v.vibe;

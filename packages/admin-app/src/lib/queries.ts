@@ -160,6 +160,11 @@ export const operatorConfigQuery = queryOptions({
   queryFn: () => unwrap(api.admin.api["operator-config"].$get()),
 });
 
+export const deploymentConfigQuery = queryOptions({
+  queryKey: ["deployment-config"],
+  queryFn: () => unwrap(api.admin.api["deployment-config"].$get()),
+});
+
 export const corpusQuery = (table: string) =>
   queryOptions({
     queryKey: ["corpus", table],
@@ -194,5 +199,6 @@ export type NormalizeAuditData = InferResponseType<typeof api.admin.api.normaliz
 export type ReconcileData = InferResponseType<typeof api.admin.api.reconcile.$get>;
 export type DiscoveryConfigData = InferResponseType<typeof api.admin.api.discovery.config.$get>;
 export type OperatorConfigData = InferResponseType<(typeof api.admin.api)["operator-config"]["$get"]>;
+export type DeploymentConfigData = InferResponseType<(typeof api.admin.api)["deployment-config"]["$get"]>;
 export type CorpusData = InferResponseType<(typeof api.admin.api.corpus)[":table"]["$get"]>;
 export type IngestKeysData = InferResponseType<typeof api.admin.api.ingest.keys.$get>;

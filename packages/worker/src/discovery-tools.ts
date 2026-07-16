@@ -14,8 +14,10 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { Env } from "./env.js";
+import type { Tenant } from "./tenant.js";
 import type { CorpusStore } from "./corpus-store.js";
 import { ToolError, runTool } from "./errors.js";
+import { recordImportGrant } from "./visibility.js";
 import { validateFile } from "./validate.js";
 import { seedRecipeDescription } from "./recipe-embeddings.js";
 import { seedRecipeFacets } from "./recipe-classify.js";
@@ -44,8 +46,9 @@ export function registerDiscoveryTools(
   server: McpServer,
   store: CorpusStore,
   env: Env,
-  tenantId: string,
+  tenant: Tenant,
 ): void {
+  const tenantId = tenant.id;
   server.registerTool(
     "parse_recipe",
     {
@@ -106,7 +109,7 @@ export function registerDiscoveryTools(
           "The DESCRIPTIVE facets are DERIVED on the cron from the body — you do NOT need to supply `protein`, `cuisine`, `course`, `season`, `tags`, `ingredients_key`, `perishable_ingredients`, `side_search_terms`, or `meal_preppable`; the classifier fills them and `create_recipe` seeds them at import. You MAY still pass `protein`/`cuisine`/`course`/`season`/`tags` as an OPTIONAL authored OVERRIDE (it wins over the classifier; `tags` is unioned with the classifier's). " +
           "REQUIRED authored fields (rejected with validation_failed if missing) — the gates + identity: `title` (non-empty); `source` (the URL, or `null` if hand-entered; set discovered_at + discovery_source for discovery imports); `time_total` (minutes or `null`); `dietary` (array, may be `[]` — a hard diet/allergen gate, AUTHOR it, do not rely on the classifier); `requires_equipment` (array, may be `[]` — a hard makeability gate; ONLY truly-irreplaceable gear: pressure-cooker | sous-vide-circulator | blender | ice-cream-maker, a wrong tag silently hides a makeable recipe; off-vocab rejected); `pairs_with` (array of recipe slugs, may be `[]`). " +
           "Override vocab when you do supply one: `protein` (chicken | beef | pork | lamb | turkey | fish | shellfish | egg | tofu | vegetarian | vegan | mixed — map shrimp→shellfish, salmon/cod/tuna→fish; `null` for no protein focus, never 'none'), `cuisine` (american | brazilian | cajun | caribbean | chinese | cuban | filipino | french | german | greek | indian | italian | japanese | korean | mediterranean | mexican | moroccan | peruvian | southwestern | spanish | thai | vietnamese; `null` if agnostic), `season` (spring | summer | fall | winter; `[]` year-round; off-vocab incl. `autumn`/capitalized is rejected). " +
-          "Refuses to overwrite an existing slug (slug_exists), and refuses to duplicate a recipe whose `source` URL is already in the corpus (already_exists, with the existing slug — reuse it). The `description` is generated automatically — any `description` you supply is ignored.",
+          "Refuses to overwrite an existing slug (slug_exists). A `source` URL already in the corpus is DEDUP-TO-GRANT: no second copy is created — the existing recipe is brought into YOUR household's cookbook (a visibility grant, idempotent if you already hold one) and the tool returns already_exists with the existing slug to reuse. A fresh create likewise lands in your household's cookbook at creation (and is visible more widely per the deployment profile and friend lenses). The `description` is generated automatically — any `description` you supply is ignored.",
       inputSchema: {
         frontmatter: z.record(z.string(), z.unknown()),
         body: z.string(),
@@ -115,18 +118,28 @@ export function registerDiscoveryTools(
     },
     ({ frontmatter, body, slug }) =>
       runTool(async () => {
-        // Idempotency (§6.4): a recipe is shared and single-source. If this
-        // `source` already resolves to a corpus recipe, refuse the duplicate and
-        // point the agent at the existing slug to reuse.
+        const today = new Date().toISOString().slice(0, 10);
+        // Idempotency (§6.4), now DEDUP-TO-GRANT (shared-corpus D12): a recipe is shared
+        // and single-source. If this `source` already resolves to a corpus recipe, mint
+        // the caller HOUSEHOLD's visibility grant on the existing recipe (idempotent —
+        // INSERT OR IGNORE, first provenance wins) and return `already_exists` with the
+        // slug to reuse: a second import creates a grant, never a second copy.
         const source = typeof frontmatter.source === "string" ? frontmatter.source : null;
         if (source) {
           const existing = indexSourceToSlug(await recipeSourceMap(env)).get(
             canonicalizeUrl(source),
           );
           if (existing) {
+            await recordImportGrant(env, {
+              recipe: existing,
+              tenant: tenant.id,
+              member: tenant.member,
+              via: "agent",
+              importedAt: today,
+            });
             throw new ToolError(
               "already_exists",
-              `A recipe for ${source} already exists (slug: ${existing}) — reuse it`,
+              `A recipe for ${source} is already in the corpus — it is now in your household's cookbook (slug: ${existing}); reuse it`,
               { slug: existing, source },
             );
           }
@@ -137,6 +150,21 @@ export function registerDiscoveryTools(
         // (validation_failed) and nothing is written.
         validateFile(file.path, file.content);
         await store.put(file.path, file.content);
+        // Import-path attribution at creation (shared-corpus): the caller household's
+        // grant is recorded in the same operation as the R2 put, so an agent import is
+        // never unattached — the recipe is visible through this household's lens the
+        // moment it becomes readable. Deliberately NOT best-effort (unlike the seeds
+        // below): a swallowed failure would leave the recipe for the lens reconcile's
+        // OPERATOR-household fallback, hiding the import from the caller under SaaS.
+        // Surfacing the error is self-recoverable — a retried create_recipe hits the
+        // dedup path, which mints the caller's grant idempotently.
+        await recordImportGrant(env, {
+          recipe: finalSlug,
+          tenant: tenant.id,
+          member: tenant.member,
+          via: "agent",
+          importedAt: today,
+        });
         // Seed the derived description synchronously so the new recipe reads well before the
         // reconcile's next tick (the reconcile stays the authority + refreshes on facet change).
         // Best-effort: a generation failure must NOT fail the already-persisted import.
@@ -230,13 +258,13 @@ export function registerDiscoveryTools(
     "list_new_for_me",
     {
       description:
-        "Return the recipes the BACKGROUND discovery sweep imported FOR YOU since your last meal plan — already classified and embedded (so they're immediately usable AND retrievable via search_recipes). Each carries { slug, title, description, protein, cuisine, time_total, discovered_at }. Scoped to the caller: recipes the sweep matched to YOUR taste, that you haven't favorited/rejected or cooked, discovered after your last plan (capped at a recent window for a never-planned member). This REPLACES the old fetch_rss_discoveries/read_discovery_inbox pull — discovery is autonomous now; you read the result, you don't triage/parse/import in-flow. Fold these into the menu before the rest of retrieval. An empty list is normal (nothing new since you last planned).",
+        "Return the recipes the BACKGROUND discovery sweep imported FOR YOU since your last meal plan — already classified and embedded (so they're immediately usable AND retrievable via search_recipes). Each carries { slug, title, description, protein, cuisine, time_total, discovered_at }. Scoped to the calling MEMBER's discovery attribution: recipes the sweep taste-matched to YOU (not merely to your household), that you haven't favorited/rejected or cooked, discovered after your last plan (capped at a recent window for a never-planned member). Discovery-attribution-based and unchanged by visibility events: a recipe that newly entered your lens through a friend, or a curated landing (which carries no member matches), NEVER appears here. This REPLACES the old fetch_rss_discoveries/read_discovery_inbox pull — discovery is autonomous now; you read the result, you don't triage/parse/import in-flow. Fold these into the menu before the rest of retrieval. An empty list is normal (nothing new since you last planned).",
       inputSchema: {},
     },
     () =>
       runTool(async () => {
         const floor = new Date(Date.now() - NEW_FOR_ME_WINDOW_DAYS * 86_400_000).toISOString().slice(0, 10);
-        const recipes = await readNewForMe(env, tenantId, floor);
+        const recipes = await readNewForMe(env, tenantId, tenant.member, floor);
         return { recipes };
       }),
   );

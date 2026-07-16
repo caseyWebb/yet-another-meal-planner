@@ -57,6 +57,14 @@ export function RecipeRow({
         {recipe.description ? <span className="rdesc">{recipe.description}</span> : null}
         <span className="rfacets">
           <RecipeFacets protein={recipe.protein} cuisine={recipe.cuisine} timeTotal={recipe.time_total} />
+          {recipe.provenance === "curated" ? (
+            // The "Curated" provenance badge (member-app-core): the promo-badge-slot
+            // treatment (the panel's .rpromo) rendered beside the facet chips — only on
+            // rows whose highest-precedence grant is the curated tenant's.
+            <span className="rpromo" data-testid="curated-badge">
+              Curated
+            </span>
+          ) : null}
           {annotation ?? null}
         </span>
       </Link>

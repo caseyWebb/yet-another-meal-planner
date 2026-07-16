@@ -20,7 +20,12 @@ import {
   saveOperatorConfig,
   validateOperatorConfig,
   parseOperatorConfigPatch,
+  loadDeploymentConfig,
+  saveDeploymentConfig,
+  validateProfileFlip,
   type OperatorConfig,
+  type DeploymentConfig,
+  type DeploymentConfigPatch,
 } from "../operator-config.js";
 import { isCorpusTable, listCorpusTable, addCorpusRow, deleteCorpusRow } from "../admin-corpus.js";
 import { ToolError } from "../errors.js";
@@ -103,6 +108,44 @@ export async function putOperatorConfig(env: Env, body: Record<string, unknown>)
   if (err) throw err;
   await saveOperatorConfig(env, patch);
   return { config: await loadOperatorConfig(env) };
+}
+
+// --- Deployment profile + curated source (deployment-profiles-and-visibility-lens) ------------
+
+export async function getDeploymentConfig(env: Env): Promise<{ config: DeploymentConfig }> {
+  return { config: await loadDeploymentConfig(env) };
+}
+
+/**
+ * Write the deployment profile and/or the curated-source URL, enforcing the flip guards
+ * on the `operator_config` write path (shared-corpus): self-hosted → SaaS needs the
+ * explicit `confirm` (a structured `validation_failed` with `needsConfirm` otherwise —
+ * the island re-submits with confirm, the operator-config floor idiom); SaaS →
+ * self-hosted is REFUSED (structured `conflict` naming the consent-inversion guard, no
+ * write, confirm cannot override) while more than one household owns a non-empty
+ * non-curated cookbook. `curated_source_url`: a URL repoints, `""` disables curated
+ * intake, `null` resets to the compiled default.
+ */
+export async function putDeploymentConfig(env: Env, body: Record<string, unknown>): Promise<{ config: DeploymentConfig }> {
+  const patch: DeploymentConfigPatch = {};
+  if (body.profile !== undefined) {
+    if (body.profile !== "self-hosted" && body.profile !== "saas") {
+      throw new ToolError("validation_failed", 'profile must be "self-hosted" or "saas"', { field: "profile" });
+    }
+    const err = await validateProfileFlip(env, body.profile, { confirm: body.confirm === true });
+    if (err) throw err;
+    patch.profile = body.profile;
+  }
+  if (body.curated_source_url !== undefined) {
+    if (body.curated_source_url !== null && typeof body.curated_source_url !== "string") {
+      throw new ToolError("validation_failed", "curated_source_url must be a URL string, \"\" (disable), or null (reset to default)", {
+        field: "curated_source_url",
+      });
+    }
+    patch.curatedSourceUrl = body.curated_source_url;
+  }
+  await saveDeploymentConfig(env, patch);
+  return { config: await loadDeploymentConfig(env) };
 }
 
 // --- Shared-corpus editors (flyer-terms / feeds / senders / members) ---------------------------

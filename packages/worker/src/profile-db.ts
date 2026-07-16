@@ -39,6 +39,7 @@ interface ProfileRow {
   kitchen_notes: string | null;
   freezer_capacity_estimate: string | null;
   retrospective_prefs: string | null;
+  curated_hide: number | null;
 }
 
 /** Parse a JSON column, tolerating null/empty/garbage as `null`. */
@@ -129,6 +130,10 @@ function assemblePreferences(
   if (retrospective) prefs.retrospective = retrospective;
   const custom = asObject(parseJson(row.custom));
   if (custom) prefs.custom = custom;
+  // Household-scoped curated-tier hide (deployment-profiles-and-visibility-lens): a
+  // preferences-document boolean over the profile.curated_hide column. Only a stored
+  // TRUE surfaces (NULL/0 is the default "shown" state, kept sparse).
+  if (row.curated_hide === 1) prefs.curated_hide = true;
   if (brands.length > 0) {
     const map: Record<string, unknown> = {};
     for (const row of brands) {
@@ -145,7 +150,7 @@ function assemblePreferences(
 const PROFILE_SELECT =
   "SELECT tenant, taste, diet_principles, default_cooking_nights, cadence, planning_cadence_days, lunch_strategy, " +
   "ready_to_eat_default_action, weekly_budget, stores, dietary, rotation, custom, kitchen_notes, " +
-  "freezer_capacity_estimate, retrospective_prefs FROM profile WHERE tenant = ?1";
+  "freezer_capacity_estimate, retrospective_prefs, curated_hide FROM profile WHERE tenant = ?1";
 
 /** The caller's preferences object (or null when none are set up). */
 export async function readPreferences(env: Env, tenant: string): Promise<Preferences | null> {
@@ -319,6 +324,7 @@ const SCALAR_PROFILE_COLUMNS = [
   "custom",
   "kitchen_notes",
   "freezer_capacity_estimate",
+  "curated_hide",
 ] as const;
 
 type ProfileColumn = (typeof SCALAR_PROFILE_COLUMNS)[number];

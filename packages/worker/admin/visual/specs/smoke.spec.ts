@@ -61,13 +61,15 @@ test("data sub-nav routes to stores and guidance", async ({ dataPage }) => {
   await dataPage.captureForReview("data-guidance");
 });
 
-test("config sub-nav routes to its four groups", async ({ configPage }) => {
+test("config sub-nav routes to its five groups", async ({ configPage }) => {
   await configPage.gotoIngestKeys();
   await configPage.captureForReview("config-ingest-keys");
   await configPage.gotoFlyer();
   await configPage.captureForReview("config-flyer");
   await configPage.gotoRanking();
   await configPage.captureForReview("config-ranking");
+  await configPage.gotoDeployment();
+  await configPage.captureForReview("config-deployment");
 });
 
 test.describe("seeded fixtures render", () => {

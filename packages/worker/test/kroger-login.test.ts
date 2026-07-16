@@ -32,7 +32,7 @@ function fakeEnv(kv: KvStore): Env {
   return { KROGER_KV: kv, CORPUS: {} } as unknown as Env;
 }
 
-const tenant: Tenant = { id: "casey" } as Tenant;
+const tenant: Tenant = { id: "casey", member: "casey" };
 
 describe("kroger_login_url tool", () => {
   it("returns a consent URL embedding a nonce bound to the caller's tenant", async () => {

@@ -16,7 +16,7 @@ import type { Env } from "../src/env.js";
 import type { Tenant } from "../src/tenant.js";
 import { fakeD1 } from "./fake-d1.js";
 
-const TENANT: Tenant = { id: "casey" };
+const TENANT: Tenant = { id: "casey", member: "casey" };
 
 /** An EMBED_DIM one-hot (plus small leakage components) — synthetic, deterministic vectors
  *  whose cosine ordering the tests control exactly. */

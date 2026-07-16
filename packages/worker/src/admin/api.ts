@@ -19,6 +19,7 @@ import {
   onboard,
   rotate,
   revoke,
+  revokeMember,
   krogerConsentLink,
   randomInviteCode,
   createGroupInvite,
@@ -65,7 +66,7 @@ import { readNormalizationPage, readNodesPage } from "../normalize-admin.js";
 import { readReconcileObservability } from "../reconcile-admin.js";
 import { readAuditObservability, readAuditSurface } from "../audit-admin.js";
 import { CONTRACT_VERSION } from "@yamp/contract";
-import { getDiscoveryConfig, putDiscoveryConfig, analyzeDiscovery, dryRunDiscovery, testFeed, getOperatorConfig, putOperatorConfig, listCorpus, addCorpus, deleteCorpus } from "./config-api.js";
+import { getDiscoveryConfig, putDiscoveryConfig, analyzeDiscovery, dryRunDiscovery, testFeed, getOperatorConfig, putOperatorConfig, getDeploymentConfig, putDeploymentConfig, listCorpus, addCorpus, deleteCorpus } from "./config-api.js";
 
 /** The injectable surface the member-lifecycle operations close over (real bindings here). */
 export function adminDeps(env: Env): AdminDeps {
@@ -124,7 +125,14 @@ export function registerApiRoutes(app: Hono<{ Bindings: Env }, BlankSchema, "/ad
         return c.json({ ...result, connector_url: connectorUrl(c.req.url) });
       })
       .post("/api/tenants/:id/rotate", async (c) => {
-        const result = await rotate(adminDeps(c.env), decodeURIComponent(c.req.param("id")));
+        // Optional member targeting (households-friends-and-people-page): a non-founding
+        // member's rotate mints a bootstrap resolving to THEIR (tenant, member) pair.
+        const body = await c.req.json<{ member?: string }>().catch(() => ({}) as { member?: string });
+        const result = await rotate(
+          adminDeps(c.env),
+          decodeURIComponent(c.req.param("id")),
+          typeof body.member === "string" && body.member ? body.member : undefined,
+        );
         return c.json({ ...result, connector_url: connectorUrl(c.req.url) });
       })
       // Mint a single-use Kroger consent link for an allowlisted member (for one with no /mcp session yet).
@@ -132,8 +140,22 @@ export function registerApiRoutes(app: Hono<{ Bindings: Env }, BlankSchema, "/ad
         c.json(await krogerConsentLink(c.env, adminDeps(c.env), decodeURIComponent(c.req.param("id")), new URL(c.req.url).origin)),
       )
       .delete("/api/tenants/:id", async (c) => {
+        // Household purge: the whole-tenant half of the split lifecycle (route + behavior unchanged).
         return c.json(await revoke(adminDeps(c.env), decodeURIComponent(c.req.param("id"))));
       })
+      // Member revoke (member-identity-split): remove ONE member — their row, passkeys,
+      // sessions, invites, authored notes, and social rows — leaving the household intact;
+      // refuses the last member (structured `conflict` directing the operator to household
+      // purge). Surfaced by the roster's member-level actions menu.
+      .delete("/api/tenants/:id/members/:member", async (c) =>
+        c.json(
+          await revokeMember(
+            adminDeps(c.env),
+            decodeURIComponent(c.req.param("id")),
+            decodeURIComponent(c.req.param("member")),
+          ),
+        ),
+      )
       // Group invite codes (self-service-signup): mint a capped/expiring code (shown once,
       // never logged), list codes with live usage + provenance, revoke one (halts further
       // signups; accounts already created are untouched).
@@ -261,6 +283,10 @@ export function registerApiRoutes(app: Hono<{ Bindings: Env }, BlankSchema, "/ad
       // Config › Ranking + Flyer: the operator ranking/flyer config store.
       .get("/api/operator-config", async (c) => c.json(await getOperatorConfig(c.env)))
       .put("/api/operator-config", async (c) => c.json(await putOperatorConfig(c.env, await c.req.json())))
+      // Config › Deployment: the profile card (flip guards on the write path) + the
+      // curated-source knob (deployment-profiles-and-visibility-lens).
+      .get("/api/deployment-config", async (c) => c.json(await getDeploymentConfig(c.env)))
+      .put("/api/deployment-config", async (c) => c.json(await putDeploymentConfig(c.env, await c.req.json())))
       // Config › shared-corpus editors: list/add/remove the five group-wide lookup tables. The add
       // route declares its JSON body via a validator so the typed client accepts it alongside :table.
       .get("/api/corpus/:table", async (c) => c.json(await listCorpus(c.env, c.req.param("table"))))

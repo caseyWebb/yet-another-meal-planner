@@ -91,7 +91,7 @@ request is still authorized by the server-side session, never by the stamp.
 
 ### Requirement: Class (b) writes queue offline and replay on reconnect
 
-The app SHALL issue every class (b) write as a registered mutation — a `mutationKey` with client-registered defaults and plain-JSON variables — so that a write made while offline pauses instead of failing, persists across a reload, and replays when connectivity returns (automatically on reconnect, and via resume-after-restore on the next launch). The class (b) set is the two-writer table's idempotent, canonical-id-keyed upserts and deletes: grocery add/set/remove and **check/uncheck** (a narrow canonical-key operation that atomically materializes a virtual plan line before checking it and never changes `status`), grocery Buy-anyway and substitution decision upserts/deletes, send-scoped line relist, pantry ops and verify (including the `location` and `category` fields riding the pantry upsert), **pantry dispose** (keyed on its client-minted waste `event_id`; the app mints a ULID and stamps `occurred_at` at tap time, so replay converges), favorite set, plan ops (keyed by the client-minted plan-row id), log add/delete, note add/edit/remove, vibe create/delete, and proposal confirm. Both pantry disposition and multi-item add use the existing pantry-ops key.
+The app SHALL issue every class (b) write as a registered mutation — a `mutationKey` with client-registered defaults and plain-JSON variables — so that a write made while offline pauses instead of failing, persists across a reload, and replays when connectivity returns (automatically on reconnect, and via resume-after-restore on the next launch). The class (b) set is the two-writer table's idempotent, canonical-id-keyed upserts and deletes: grocery add/set/remove and **check/uncheck** (a narrow canonical-key operation that atomically materializes a virtual plan line before checking it and never changes `status`), grocery Buy-anyway and substitution decision upserts/deletes, send-scoped line relist, pantry ops and verify (including the `location` and `category` fields riding the pantry upsert), **pantry dispose** (keyed on its client-minted waste `event_id`; the app mints a ULID and stamps `occurred_at` at tap time, so replay converges), favorite set, plan ops (keyed by the client-minted plan-row id), log add/delete, note add/edit/remove, vibe create/delete, proposal confirm, and **nickname upsert/clear** (keyed by the canonical `(viewer member, target member)` pair; the empty-save clear is the keyed delete — the People page's one class (b) write). Both pantry disposition and multi-item add use the existing pantry-ops key.
 
 Replays SHALL be serial and reuse registered defaults (optimistic update, error surfacing, settle-time invalidation). A repeated check delivery whose desired state already holds SHALL succeed idempotently. An opposing stale check/uncheck SHALL not overwrite a newer row version; it SHALL surface a structured conflict and replace optimistic state with the returned authoritative snapshot. Offline, class-(b) surfaces SHALL remain interactive with optimistic state where the page renders the written row. MCP-host writes remain online-only.
 
@@ -115,15 +115,22 @@ Replays SHALL be serial and reuse registered defaults (optimistic update, error 
 - **WHEN** a member records waste offline with a client-minted event id and the mutation is later delivered more than once
 - **THEN** exactly one waste event is recorded on the stamped occurrence day
 
+#### Scenario: A nickname edit made during a connectivity drop replays
+- **WHEN** a member with the People page open loses connectivity, edits a nickname, and reconnects
+- **THEN** the edit renders optimistically, queues under its `(viewer, target)` canonical key, and replays idempotently — while every other People action (requests, accepts, blocks, invites) stays online-only
+
 ### Requirement: Online-only surfaces are unreplayable by construction
 
 The app SHALL make the online-only surfaces inexpressible as queued/replayed work: the order
-preview/commit, substitutions, propose, vibe suggest, session login/logout, and every class
-(a) `If-Match` write are never entered into the mutation cache (direct calls or queries, per
-their landed classifications), and the mutation-dehydration predicate SHALL refuse any
-mutation whose key is not in the class (b) registry — so an unregistered mutation cannot be
-persisted even if one is introduced. While offline, these surfaces SHALL render disabled or fail fast with the
-existing structured copy; none of them SHALL fire automatically on reconnect.
+preview/commit, substitutions, propose, vibe suggest, session login/logout, the social
+operations (handle lookup, request send/accept/decline/cancel, block/unblock, unfriend,
+invite-link mint/revoke, join redemption, member remove, leave-household, household-accept),
+and every class (a) `If-Match` write are never entered into the mutation cache (direct calls
+or queries, per their landed classifications), and the mutation-dehydration predicate SHALL
+refuse any mutation whose key is not in the class (b) registry — so an unregistered mutation
+cannot be persisted even if one is introduced. While offline, these surfaces SHALL render
+disabled or fail fast with the existing structured copy; none of them SHALL fire
+automatically on reconnect.
 
 #### Scenario: An order commit attempted around a connectivity drop is never replayed
 
@@ -143,6 +150,11 @@ existing structured copy; none of them SHALL fire automatically on reconnect.
   markdown, vibe edit)
 - **THEN** the editor is disabled with an offline hint (or the attempt fails fast); no
   `If-Match` write is queued for later replay
+
+#### Scenario: Social actions fail fast offline and never auto-fire
+
+- **WHEN** a member attempts to accept a request or send an invite while offline and then reconnects
+- **THEN** the attempt fails fast with the structured offline hint (or the control is disabled), nothing is queued, and no social write fires on reconnect
 
 ### Requirement: The service worker precaches the shell and never caches API responses
 
@@ -256,10 +268,13 @@ recorded — never a hand-waved green.
 
 ### Requirement: Sidebar badges render offline from persisted reads
 
-The sidebar badge derivation SHALL read only allowlisted persisted queries — the meal plan
-and the derived to-buy view — so the badges render from the persisted cache while offline,
-consistent with the pages those reads back. The derivation SHALL introduce no new query or
-network request of its own.
+The sidebar badge derivation SHALL read only the same area reads the pages use, and while
+offline it renders from whichever of them are in the persisted cache — the meal plan and
+the derived to-buy view — so the plan and grocery badges render offline, consistent with the
+pages those reads back. The people aggregate read is deliberately NOT on the persistence
+allowlist (social data stays out of the offline store), so after an offline relaunch the
+People badge is simply absent until connectivity returns. The derivation SHALL introduce no
+new query or network request of its own.
 
 #### Scenario: Badges render from the persisted cache offline
 
@@ -267,6 +282,12 @@ network request of its own.
   persisted cache
 - **THEN** the sidebar meal-plan and grocery badges render from that persisted data with no
   network request
+
+#### Scenario: The people badge is absent offline, never stale
+
+- **WHEN** the app relaunches offline for a member who had pending inbound requests
+- **THEN** no People badge renders (the people read is not persisted), and the badge returns
+  with the live count once the aggregate read succeeds online
 
 ### Requirement: Grocery purchase assertions and MCP writes remain online-only
 
@@ -305,3 +326,4 @@ The aisle-map whole-document `If-Match` write and household nickname preferences
 #### Scenario: Map and nickname edits never replay later
 - **WHEN** a member opens either editor offline
 - **THEN** save is disabled with an offline hint and reconnect does not automatically issue a write
+

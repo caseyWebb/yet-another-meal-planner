@@ -124,6 +124,60 @@ export class CookbookPage extends AppPage {
     return this.page.getByTestId("trending-chip");
   }
 
+  // --- cold-start onboarding + curated provenance (SaaS variant;
+  // deployment-profiles-and-visibility-lens) -----------------------------------------
+
+  /** The curated-floor onboarding panel (above the curated list). */
+  onboardingPanel(): Locator {
+    return this.page.getByTestId("cookbook-onboarding");
+  }
+
+  /** The true-zero variant (the fuller empty treatment carrying the three cards). */
+  onboardingZero(): Locator {
+    return this.page.getByTestId("cookbook-onboarding-zero");
+  }
+
+  /** One of the three compact action cards (friends / agent / curated). */
+  onboardingCard(name: "friends" | "agent" | "curated"): Locator {
+    return this.page.getByTestId(`onboarding-card-${name}`);
+  }
+
+  /** A row's "Curated" provenance badge (the promo-badge-slot treatment beside the chips). */
+  curatedBadge(slug: string): Locator {
+    return this.row(slug).getByTestId("curated-badge");
+  }
+
+  /** Every curated badge on the page (absence assertions under self-hosted). */
+  anyCuratedBadges(): Locator {
+    return this.page.getByTestId("curated-badge");
+  }
+
+  /** Dismiss the onboarding panel and wait for the household-level preferences write
+   *  (the merge-patch PATCH) to land, so a reload cannot race the persistence. */
+  async dismissOnboarding(): Promise<void> {
+    const done = this.page.waitForResponse(
+      (r) => r.url().includes("/api/profile/preferences") && r.request().method() === "PATCH" && r.ok(),
+    );
+    await this.page.getByTestId("onboarding-dismiss").click();
+    await done;
+  }
+
+  /** A direct, awaited preferences merge-patch through the browser session (the
+   *  profile page object's resetPrefs idiom) — the saas specs' flag restore path. */
+  async patchPreferences(patch: Record<string, unknown>): Promise<void> {
+    const status = await this.page.evaluate(async (p: Record<string, unknown>) => {
+      const read = await fetch("/api/profile/preferences");
+      const etag = read.headers.get("etag") ?? "";
+      const res = await fetch("/api/profile/preferences", {
+        method: "PATCH",
+        headers: { "content-type": "application/json", "X-App-Csrf": "1", "If-Match": etag },
+        body: JSON.stringify({ patch: p }),
+      });
+      return res.status;
+    }, patch);
+    if (status !== 200) throw new Error(`preferences patch failed (${status})`);
+  }
+
   // --- cooking-log provisioning (through the browser's session fetch) --------------
 
   /** The caller's own cooking-log entries (id + fields), via the real API. */

@@ -2,9 +2,14 @@
 // search" + member-app-differentiators' promoted panel): search bar → global filter bar
 // → the "Recommended for you" panel → a flat title-sorted organic list. The panel
 // repackages the three existing differentiator reads as reason badges — "Just Added"
-// (new-for-me watermark), "Trending" (the guarded group read, min-signal guard and chip
-// copy verbatim; "Popular with Friends" waits for the friend lens), "Picked for You"
-// (favorites centroid) — at most one row per signal, deduped out of the organic list.
+// (new-for-me watermark), the cook signal (the guarded group read — "Trending" with
+// today's chip copy under self-hosted; "Popular with Friends" with household-counted
+// chip copy under SaaS; the trending read's `profile` conditions both), "Picked for
+// You" (favorites centroid) — at most one row per signal, deduped out of the organic list.
+// Under SaaS, a household with zero non-curated imports gets the cold-start onboarding
+// (design request #11): the curated-floor panel above the badged curated list, or the
+// true-zero empty treatment — filter bar and promoted panel hidden in both; retired by
+// the first own import (derived) or an explicit household-level dismiss (preferences).
 // Favorites is an in-page VIEW MODE (?view=favorites): same filters, panel hidden, its
 // own empty copy — entered through the All recipes / Favorites tab row (the
 // design-requests #1 bundle) between the search bar and the filter bar. All shareable
@@ -13,10 +18,18 @@
 // Search keeps the debounce-against-API behavior (the mock's keystroke search is
 // in-memory only — painted door).
 import * as React from "react";
-import { createFileRoute, stripSearchParams, type SearchSchemaInput } from "@tanstack/react-router";
+import { useQueryClient } from "@tanstack/react-query";
+import {
+  Link,
+  createFileRoute,
+  getRouteApi,
+  stripSearchParams,
+  type SearchSchemaInput,
+} from "@tanstack/react-router";
 import {
   Button,
   EmptyState,
+  IconBook,
   IconHeart,
   IconHeartFill,
   IconSearch,
@@ -26,7 +39,9 @@ import {
   PageHead,
   SegmentedControl,
 } from "@yamp/ui";
+import { ConnectClaudeModal } from "../components/connect-claude";
 import { RecipeRow, RecipeList } from "../components/recipe-list";
+import { patchPreferences } from "../lib/preferences";
 import {
   facetOptions,
   filterHits,
@@ -40,6 +55,7 @@ import {
   useNewForMe,
   useOverlay,
   usePickedForYou,
+  useProfile,
   useSearch as useSearchQuery,
   useTrending,
   type Hit,
@@ -77,10 +93,12 @@ export const Route = createFileRoute("/_app/")({
   component: CookbookPage,
 });
 
-/** One promoted row: the hit plus its uppercase reason badge. */
+/** One promoted row: the hit plus its uppercase reason badge. The cook-signal reason is
+ *  profile-conditioned (member-app-differentiators): "Trending" under self-hosted,
+ *  "Popular with Friends" under SaaS — one signal, two labels. */
 interface PromotedRow {
   hit: Hit;
-  badge: "Just Added" | "Trending" | "Picked for You";
+  badge: "Just Added" | "Trending" | "Popular with Friends" | "Picked for You";
 }
 
 /**
@@ -108,9 +126,15 @@ function promoteRows(
   return promoted;
 }
 
+const appRoute = getRouteApi("/_app");
+
 function CookbookPage() {
   const search = Route.useSearch();
   const navigate = Route.useNavigate();
+  // The deployment profile + operator identity from the shell's whoami loader: the
+  // profile gates the SaaS-only cold-start states (never rendered under self-hosted);
+  // the operator templates the onboarding's Connect-to-Claude modal.
+  const { profile: deployProfile, operator } = appRoute.useLoaderData();
   const { q, view } = search;
   const filters: CookbookFilterState = {
     cuisine: search.cuisine,
@@ -139,6 +163,9 @@ function CookbookPage() {
   const trending = useTrending();
   const picked = usePickedForYou();
   const apiSearch = useSearchQuery(q);
+  const memberProfile = useProfile();
+  const qc = useQueryClient();
+  const [connectOpen, setConnectOpen] = React.useState(false);
 
   function onInput(v: string) {
     setText(v);
@@ -188,29 +215,70 @@ function CookbookPage() {
 
   // Honest trend chips (D31): rendered ONLY from the guarded trending read — wherever
   // the recipe is listed (panel or organic) — never fabricated when the set is empty.
+  // Copy is profile-conditioned: self-hosted keeps today's member counts verbatim;
+  // SaaS counts FRIEND HOUSEHOLDS (cooks_by counts non-caller households there), never
+  // naming them or their members.
   const trendingRows = trending.data?.recipes ?? [];
+  const trendingProfile = trending.data?.profile === "saas" ? "saas" : "self-hosted";
   const trendingBySlug = new Map(trendingRows.map((r) => [r.slug, r]));
   const trendChip = (slug: string): React.ReactNode => {
     const t = trendingBySlug.get(slug);
     if (!t) return null;
     return (
       <span className="facet trend-chip" data-testid="trending-chip">
-        {t.cooks_by > 1 ? `cooked by ${t.cooks_by} members` : `cooked ${t.cooks}× recently`}
+        {trendingProfile === "saas"
+          ? `cooked by ${t.cooks_by} friend household${t.cooks_by === 1 ? "" : "s"}`
+          : t.cooks_by > 1
+            ? `cooked by ${t.cooks_by} members`
+            : `cooked ${t.cooks}× recently`}
       </span>
     );
   };
 
-  // The promoted panel derives per render from the three existing reads.
+  // The promoted panel derives per render from the three existing reads. The cook
+  // signal's label follows the trending read's profile: "Trending" under self-hosted
+  // (unchanged), "Popular with Friends" under SaaS.
   const promoted = promoteRows(
     [
       { badge: "Just Added", rows: newForMe.data?.recipes ?? [] },
-      { badge: "Trending", rows: trendingRows },
+      { badge: trendingProfile === "saas" ? "Popular with Friends" : "Trending", rows: trendingRows },
       { badge: "Picked for You", rows: picked.data?.recipes ?? [] },
     ],
     filters,
   );
-  const promotedSlugs = new Set(promoted.map((p) => p.hit.slug));
-  const showPromoted = !searching && view === "all" && promoted.length > 0;
+
+  // Cookbook cold-start (member-app-core, SaaS only — design request #11): while the
+  // household owns ZERO non-curated imports (no hit with provenance "own" — a derived
+  // condition, so the first own import retires it with no stored state) and has not
+  // explicitly dismissed it (the household-level preferences flag), the browse view
+  // renders the onboarding treatment: the curated-floor panel above the curated list,
+  // or the true-zero empty treatment when no rows render at all. Never under
+  // self-hosted; never in search mode or the favorites view. A missing `provenance`
+  // (pre-lens Worker skew) reads as "own", so the states fail closed to today's page.
+  const prefs = (memberProfile.data?.preferences ?? {}) as Record<string, unknown>;
+  const customPrefs = (prefs.custom ?? {}) as Record<string, unknown>;
+  const onboardingDismissed = customPrefs.cookbook_onboarding_dismissed === true;
+  const ownsAny = indexHits.some((r) => (r.provenance ?? "own") === "own");
+  const coldStart =
+    deployProfile === "saas" &&
+    index.data !== undefined &&
+    memberProfile.data !== undefined &&
+    !ownsAny &&
+    !onboardingDismissed;
+  const coldStartActive = coldStart && !searching && view === "all";
+  const coldStartZero = coldStartActive && indexHits.length === 0;
+  const coldStartFloor = coldStartActive && indexHits.length > 0;
+
+  async function dismissOnboarding() {
+    // Household-level persistence through the ONE preferences path (merge-patch under
+    // If-Match): the flag rides `custom`, so a later change can clear it the same way.
+    await patchPreferences(qc, { custom: { cookbook_onboarding_dismissed: true } });
+  }
+
+  const showPromoted = !searching && view === "all" && !coldStartActive && promoted.length > 0;
+  // Dedupe promoted rows out of the organic list only while the panel actually
+  // DISPLAYS them (hidden-panel states must not silently drop rows from the list).
+  const promotedSlugs = showPromoted ? new Set(promoted.map((p) => p.hit.slug)) : new Set<string>();
 
   // The flat organic list: full index (title-sorted server-side) minus displayed
   // promoted rows in browse mode; the filtered favorites in the favorites view.
@@ -276,6 +344,7 @@ function CookbookPage() {
         </button>
       </div>
 
+      {coldStartActive ? null : (
       <div className="filterbar" data-testid="cookbook-filters">
         <div className="fb-group">
           <span className="fb-label">Cuisine</span>
@@ -332,6 +401,7 @@ function CookbookPage() {
           ) : null}
         </div>
       </div>
+      )}
 
       {searching ? (
         <div id="results" data-testid="search-results">
@@ -351,9 +421,54 @@ function CookbookPage() {
         </div>
       ) : favEmpty ? (
         <EmptyState title="No favorites yet" sub="Tap the heart on any recipe to save it here." icon={<IconHeart />} />
+      ) : coldStartZero ? (
+        // True-zero cold start (curated hidden or empty): the three cards carry the
+        // page with the fuller empty treatment — no list, no filter bar, no panel.
+        <EmptyState
+          testId="cookbook-onboarding-zero"
+          title="Your cookbook starts here"
+          sub="Recipes you and your friends import all land in one place."
+          icon={<IconBook />}
+          action={
+            <>
+              <OnboardingCards
+                connected={memberProfile.data?.initialized === true}
+                onConnect={() => setConnectOpen(true)}
+              />
+              <Button type="button" variant="ghost" size="sm" data-testid="onboarding-dismiss" onClick={() => void dismissOnboarding()}>
+                <IconX /> Dismiss
+              </Button>
+            </>
+          }
+        />
       ) : (
         <div id="browse">
-          {showPromoted ? (
+          {coldStartFloor ? (
+            // Curated-floor cold start: the onboarding panel above the curated list
+            // (badged rows below; hearts and plan-toggles work on them immediately).
+            <section className="promo-panel" data-testid="cookbook-onboarding">
+              <div className="promo-cap">
+                <IconSparkles /> Get your cookbook started
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="ml-auto"
+                  data-testid="onboarding-dismiss"
+                  onClick={() => void dismissOnboarding()}
+                >
+                  <IconX /> Dismiss
+                </Button>
+              </div>
+              <OnboardingCards
+                connected={memberProfile.data?.initialized === true}
+                onConnect={() => setConnectOpen(true)}
+                onBrowseCurated={() =>
+                  document.getElementById("cookbook-list")?.scrollIntoView({ behavior: "smooth", block: "start" })
+                }
+              />
+            </section>
+          ) : showPromoted ? (
             <section className="promo-panel" data-testid="promoted">
               <div className="promo-cap">
                 <IconSparkles /> Recommended for you
@@ -365,7 +480,7 @@ function CookbookPage() {
               </ul>
             </section>
           ) : null}
-          <section data-testid="organic-list">
+          <section id="cookbook-list" data-testid="organic-list">
             {listSource.length ? (
               <RecipeList recipes={listSource} annotate={trendChip} />
             ) : active ? (
@@ -383,6 +498,75 @@ function CookbookPage() {
           </section>
         </div>
       )}
+      <ConnectClaudeModal open={connectOpen} onOpenChange={setConnectOpen} operator={operator} />
+    </div>
+  );
+}
+
+/**
+ * The cold-start onboarding's three compact action cards (design request #11, local
+ * design per Decision 9 — existing card/button primitives only):
+ *   1. Add friends — links the People destination (the nav stub the People change fills).
+ *   2. Import with the agent — the Connect-to-Claude modal while the member's profile is
+ *      not yet initialized (no agent session has ever set it up — the closest wire truth
+ *      to "not yet connected"); once initialized, the paste-a-URL copy stands alone.
+ *   3. Start from the curated set — anchor-scrolls to the curated list (curated-floor
+ *      state only; the true-zero state has no list to scroll to).
+ */
+function OnboardingCards(props: {
+  connected: boolean;
+  onConnect: () => void;
+  onBrowseCurated?: () => void;
+}) {
+  return (
+    <div className="grid w-full gap-3 py-2 text-left sm:grid-cols-3" data-testid="onboarding-cards">
+      <div className="card flex flex-col gap-2 rounded-xl border bg-card p-4" data-testid="onboarding-card-friends">
+        <h3 className="text-sm font-semibold">Add friends</h3>
+        <p className="text-sm text-muted-foreground">
+          Friends' recipes flow into your cookbook — and yours into theirs.
+        </p>
+        <Button asChild variant="outline" size="sm" className="mt-auto self-start">
+          <Link to="/people">Open People</Link>
+        </Button>
+      </div>
+      <div className="card flex flex-col gap-2 rounded-xl border bg-card p-4" data-testid="onboarding-card-agent">
+        <h3 className="text-sm font-semibold">Import with the agent</h3>
+        <p className="text-sm text-muted-foreground">
+          {props.connected
+            ? "Paste a recipe URL in a Claude chat — it lands in your cookbook."
+            : "Connect to Claude, then paste any recipe URL in a chat — it lands here."}
+        </p>
+        {props.connected ? null : (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="mt-auto self-start"
+            data-testid="onboarding-connect"
+            onClick={props.onConnect}
+          >
+            Connect to Claude
+          </Button>
+        )}
+      </div>
+      <div className="card flex flex-col gap-2 rounded-xl border bg-card p-4" data-testid="onboarding-card-curated">
+        <h3 className="text-sm font-semibold">Start from the curated set</h3>
+        <p className="text-sm text-muted-foreground">
+          Hearts and plan-toggles work on curated recipes right away.
+        </p>
+        {props.onBrowseCurated ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="mt-auto self-start"
+            data-testid="onboarding-browse-curated"
+            onClick={props.onBrowseCurated}
+          >
+            Browse the curated set
+          </Button>
+        ) : null}
+      </div>
     </div>
   );
 }

@@ -187,6 +187,7 @@ function makeFakeDeps(opts: {
     confirmMatches: async (_t, _d, members) => members.map((m) => m.tenant),
     importRecipe: async () => "real-import-slug",
     recordMatches: async () => {},
+    grantCurated: async () => {},
     recordLog: async () => {},
     loadRetries: async () => [],
     resolveRow: async () => {},

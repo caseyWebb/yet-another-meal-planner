@@ -6,6 +6,8 @@ import {
   onboard,
   rotate,
   revoke,
+  revokeMember,
+  deleteInvitesForMember,
   listTenants,
   oauthGrantTenantIds,
   TENANT_TABLES,
@@ -14,8 +16,10 @@ import {
   type TenantRosterRow,
 } from "../src/admin.js";
 import { handleAdmin } from "./admin-request.js";
+import { sqliteEnv } from "./sqlite-d1.js";
+import { db, type Db } from "../src/db.js";
+import { insertFoundingMember } from "../src/members-db.js";
 import type { Env } from "../src/env.js";
-import type { Db } from "../src/db.js";
 import type { KvStore } from "../src/kroger-user.js";
 
 /** In-memory KV with get/put/delete/list (single page) — satisfies KVNamespace + KvStore. */
@@ -200,8 +204,30 @@ describe("onboard", () => {
     const r = await onboard(deps, "Casey");
     expect(r).toEqual({ username: "casey", invite_code: "code0" });
     expect(await tenantKv.get("tenant:casey")).toBe(JSON.stringify({ id: "casey" }));
-    // The invite is now a single-use bootstrap JSON record, not a bare-string mapping.
-    expect(JSON.parse((await tenantKv.get("invite:code0"))!)).toMatchObject({ tenant: "casey", single_use: true });
+    // The invite is a single-use bootstrap JSON record resolving to the founding (tenant, member) pair.
+    expect(JSON.parse((await tenantKv.get("invite:code0"))!)).toMatchObject({
+      tenant: "casey",
+      member: "casey",
+      single_use: true,
+    });
+  });
+
+  it("mints the founding member row (id = handle = the canonical tenant id) in the same flow", async () => {
+    const { env, rows } = sqliteEnv();
+    const deps: AdminDeps = {
+      tenantKv: env.TENANT_KV,
+      krogerKv: env.KROGER_KV as unknown as KvStore,
+      oauthKv: env.KROGER_KV as unknown as KvStore,
+      db: db(env),
+      randomCode: () => "code",
+    };
+    await onboard(deps, "Casey");
+    expect(rows("members")).toEqual([
+      expect.objectContaining({ id: "casey", tenant: "casey", handle: "casey" }),
+    ]);
+    // Idempotent under re-onboard (INSERT OR IGNORE — same invariant as the registry claim).
+    await onboard(deps, "casey");
+    expect(rows("members")).toHaveLength(1);
   });
 
   it("honors a supplied invite code", async () => {
@@ -317,7 +343,7 @@ describe("listTenants", () => {
     await krogerKv.put("kroger:refresh:casey", "tok");
     const { tenants } = await listTenants(env({ OWNER_TENANT_ID: "casey" }), deps);
     expect(tenants).toEqual([
-      { id: "casey", owner: true, status: "active", kroger: "linked", joined: 1000, lastActive: 2000, cooked: 5, favorites: 2 },
+      { id: "casey", owner: true, status: "active", kroger: "linked", joined: 1000, lastActive: 2000, cooked: 5, favorites: 2, members: [] },
     ]);
   });
 });
@@ -405,6 +431,36 @@ describe("rotate", () => {
     const { deps } = makeDeps();
     await expect(rotate(deps, "ghost")).rejects.toMatchObject({ code: "not_found" });
   });
+
+  it("is member-addressed with the founding default: another member's invite survives the rotation", async () => {
+    const { deps, tenantKv } = makeDeps();
+    await onboard(deps, "casey", "OLD"); // resolves to the founding member
+    // A member-addressed bootstrap for a second member of the same household.
+    await tenantKv.put("invite:M2CODE", JSON.stringify({ v: 1, tenant: "casey", member: "m2", single_use: true, expires_at: 0 }));
+
+    const r = await rotate(deps, "casey"); // founding default
+    expect(JSON.parse((await tenantKv.get(`invite:${r.invite_code}`))!)).toMatchObject({ tenant: "casey", member: "casey" });
+    expect(await tenantKv.get("invite:OLD")).toBeNull(); // the founding member's prior code died
+    expect(await tenantKv.get("invite:M2CODE")).not.toBeNull(); // m2's code untouched
+  });
+});
+
+describe("deleteInvitesForMember (D2-aware member matching)", () => {
+  it("removes exactly the member's invites: explicit member records AND legacy/founding defaults", async () => {
+    const kv = memKv({
+      "tenant:casey": JSON.stringify({ id: "casey" }),
+      "invite:LEGACY": "casey", // bare-string legacy → founding member (D2)
+      "invite:BOOT": JSON.stringify({ v: 1, tenant: "casey", single_use: true, expires_at: 0 }), // pre-split JSON → founding
+      "invite:M2": JSON.stringify({ v: 1, tenant: "casey", member: "m2", single_use: true, expires_at: 0 }),
+      "invite:OTHER": "pat", // another household entirely
+    });
+    const removed = await deleteInvitesForMember(kv, "casey", "casey");
+    expect(removed).toBe(2); // LEGACY + BOOT — both resolve to the founding member
+    expect(await kv.get("invite:LEGACY")).toBeNull();
+    expect(await kv.get("invite:BOOT")).toBeNull();
+    expect(await kv.get("invite:M2")).not.toBeNull();
+    expect(await kv.get("invite:OTHER")).not.toBeNull();
+  });
 });
 
 describe("revoke", () => {
@@ -423,7 +479,13 @@ describe("revoke", () => {
     expect(batches).toHaveLength(1);
     const sqls = batches[0].map((s) => s.sql);
     for (const t of TENANT_TABLES) expect(sqls).toContain(`DELETE FROM ${t} WHERE tenant = ?1`);
-    for (const t of AUTHOR_TABLES) expect(sqls).toContain(`DELETE FROM ${t} WHERE author = ?1`);
+    // AUTHOR_TABLES delete via the member-set subquery, ORDERED BEFORE the members
+    // delete (non-founding ULID authors must not orphan — households-friends 7.1b).
+    for (const t of AUTHOR_TABLES) {
+      const sql = `DELETE FROM ${t} WHERE author IN (SELECT id FROM members WHERE tenant = ?1)`;
+      expect(sqls).toContain(sql);
+      expect(sqls.indexOf(sql)).toBeLessThan(sqls.indexOf("DELETE FROM members WHERE tenant = ?1"));
+    }
     expect(batches[0].every((s) => s.binds[0] === "casey")).toBe(true);
   });
 
@@ -441,6 +503,95 @@ describe("revoke", () => {
     expect(await tenantKv.get("session:tok-a")).toBeNull();
     expect(await tenantKv.get("session:tok-b")).toBeNull();
     expect(await tenantKv.get("session:tok-c")).not.toBeNull(); // pat's session survives
+  });
+});
+
+describe("revokeMember (member-revoke: one member, household intact)", () => {
+  /** A two-member household over the real migration chain: casey (founding) + m2, each with
+   *  a passkey, a session, an invite, and an authored note; plus household-scoped state. */
+  async function household() {
+    const { env, rows, raw } = sqliteEnv(["casey"]);
+    const d = db(env);
+    await insertFoundingMember(d, "casey", 1000);
+    await d.run("INSERT INTO members (id, tenant, handle, created_at) VALUES (?1, ?2, ?3, ?4)", "m2", "casey", "pat", 2000);
+    await d.run("INSERT INTO tenants (id, created_at, via_code) VALUES (?1, ?2, NULL)", "casey", 1000);
+    for (const [member, credId] of [["casey", "cred-f"], ["m2", "cred-m2"]] as const) {
+      await d.run(
+        "INSERT INTO webauthn_credentials (tenant, member, credential_id, public_key, sign_count, transports, label, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "casey", member, credId, "pk", 0, null, null, 1000,
+      );
+    }
+    for (const [table, id, author] of [["recipe_notes", "n1", "casey"], ["recipe_notes", "n2", "m2"], ["store_notes", "s1", "m2"]] as const) {
+      await d.run(`INSERT INTO ${table} (id, author, body, created_at) VALUES (?1, ?2, ?3, ?4)`, id, author, "note", "2026-01-01");
+    }
+    await d.run(
+      "INSERT INTO pantry (tenant, name, normalized_name, quantity) VALUES (?1, ?2, ?3, ?4)",
+      "casey", "Rice", "rice", "1",
+    );
+    await env.TENANT_KV.put("session:tok-legacy", JSON.stringify({ tenant: "casey", created_at: 1, refreshed_at: 1 })); // pre-split → founding
+    await env.TENANT_KV.put("session:tok-m2", JSON.stringify({ tenant: "casey", member: "m2", created_at: 2, refreshed_at: 2 }));
+    await env.TENANT_KV.put("invite:FOUNDING", JSON.stringify({ v: 1, tenant: "casey", single_use: true, expires_at: 0 }));
+    await env.TENANT_KV.put("invite:M2", JSON.stringify({ v: 1, tenant: "casey", member: "m2", single_use: true, expires_at: 0 }));
+    await env.KROGER_KV.put("kroger:refresh:casey", "tok");
+    const deps: AdminDeps = {
+      tenantKv: env.TENANT_KV,
+      krogerKv: env.KROGER_KV as unknown as KvStore,
+      oauthKv: env.KROGER_KV as unknown as KvStore,
+      db: d,
+      randomCode: () => "x",
+    };
+    return { env, rows, raw, deps };
+  }
+
+  it("deletes exactly the member-scoped set and leaves household state untouched", async () => {
+    const { env, rows, deps } = await household();
+    const r = await revokeMember(deps, "Casey", "m2"); // tenant id canonicalizes
+    expect(r).toEqual({ username: "casey", member: "m2", revoked: true, invites_removed: 1, sessions_removed: 1 });
+
+    // Member-scoped D1 rows are gone; the founding member's remain.
+    expect(rows<{ id: string }>("members").map((m) => m.id)).toEqual(["casey"]);
+    expect(rows<{ credential_id: string }>("webauthn_credentials").map((c) => c.credential_id)).toEqual(["cred-f"]);
+    expect(rows<{ author: string }>("recipe_notes").map((n) => n.author)).toEqual(["casey"]);
+    expect(rows("store_notes")).toEqual([]);
+    // Member-scoped KV: only m2's session + invite died (the legacy record belongs to the founding member).
+    expect(await env.TENANT_KV.get("session:tok-m2")).toBeNull();
+    expect(await env.TENANT_KV.get("session:tok-legacy")).not.toBeNull();
+    expect(await env.TENANT_KV.get("invite:M2")).toBeNull();
+    expect(await env.TENANT_KV.get("invite:FOUNDING")).not.toBeNull();
+    // Household state untouched: allowlist, registry, Kroger token, household tables.
+    expect(await env.TENANT_KV.get("tenant:casey")).not.toBeNull();
+    expect(rows("tenants")).toHaveLength(1);
+    expect(await env.KROGER_KV.get("kroger:refresh:casey")).toBe("tok");
+    expect(rows("pantry")).toHaveLength(1);
+  });
+
+  it("revokes the FOUNDING member of a multi-member household, D2-matching its legacy records", async () => {
+    const { env, rows, deps } = await household();
+    const r = await revokeMember(deps, "casey", "casey");
+    expect(r.revoked).toBe(true);
+    expect(rows<{ id: string }>("members").map((m) => m.id)).toEqual(["m2"]);
+    // The legacy session and pre-split invite belonged to the founding member — both die.
+    expect(await env.TENANT_KV.get("session:tok-legacy")).toBeNull();
+    expect(await env.TENANT_KV.get("invite:FOUNDING")).toBeNull();
+    expect(await env.TENANT_KV.get("session:tok-m2")).not.toBeNull();
+    expect(await env.TENANT_KV.get("invite:M2")).not.toBeNull();
+  });
+
+  it("refuses the last member with a structured conflict naming household purge, deleting nothing", async () => {
+    const { env, rows, deps } = await household();
+    await revokeMember(deps, "casey", "m2"); // down to the founding member only
+    await expect(revokeMember(deps, "casey", "casey")).rejects.toMatchObject({
+      code: "conflict",
+      message: expect.stringContaining("household"),
+    });
+    expect(rows("members")).toHaveLength(1);
+    expect(await env.TENANT_KV.get("tenant:casey")).not.toBeNull();
+  });
+
+  it("is not_found for a member id with no row (nothing deleted)", async () => {
+    const { rows, deps } = await household();
+    await expect(revokeMember(deps, "casey", "ghost")).rejects.toMatchObject({ code: "not_found" });
+    expect(rows("members")).toHaveLength(2);
   });
 });
 
@@ -528,7 +679,7 @@ describe("handleAdmin (routing + gate)", () => {
     const res = await handleAdmin(new Request("http://localhost/admin/api/tenants"), env);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
-      tenants: [{ id: "bob", owner: false, status: "pending", kroger: "unlinked", joined: null, lastActive: null, cooked: 0, favorites: 0 }],
+      tenants: [{ id: "bob", owner: false, status: "pending", kroger: "unlinked", joined: null, lastActive: null, cooked: 0, favorites: 0, members: [] }],
     });
   });
 

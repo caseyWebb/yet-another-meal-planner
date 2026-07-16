@@ -31,9 +31,10 @@ export const signupArea = new Hono<ApiEnv>().post("/signup", async (c) => {
   const outcome = await redeemGroupCode(c.env, code, username);
   switch (outcome.kind) {
     case "ok": {
-      const token = await createSession(c.env.TENANT_KV, outcome.tenant);
+      // Member-bound to the founding member the redemption just minted (id = tenant id).
+      const token = await createSession(c.env.TENANT_KV, outcome.tenant, outcome.tenant);
       setSessionCookie(c, token);
-      return c.json({ tenant: { id: outcome.tenant } });
+      return c.json({ tenant: { id: outcome.tenant, member: outcome.tenant } });
     }
     case "username_taken":
       // Deliberate, bounded disclosure (design D9) — unlike login, signup must tell you a

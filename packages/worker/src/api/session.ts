@@ -1,15 +1,17 @@
 // The `session` area (member-session-auth): invite-code login, whoami, logout. The
 // login body's invite code goes through the SAME `resolveInvite` mapping that
 // provisions the Claude.ai connector — one operator-issued code per friend covers both
-// surfaces, and re-entry after expiry reuses it. An unknown code and a revoked
-// member's code are INDISTINGUISHABLE (one uniform `unauthorized` 401 — no oracle).
-// Login is rate-limited per client IP by the shared fixed-window limiter (fail-open:
-// a KV hiccup must never lock members out).
+// surfaces, and re-entry after expiry reuses it. The resolved `(tenant, member)` pair
+// runs through the shared identity resolver, and the minted session is bound to it. An
+// unknown code, a revoked member's code, and a delisted tenant's code are
+// INDISTINGUISHABLE (one uniform `unauthorized` 401 — no oracle). Login is
+// rate-limited per client IP by the shared fixed-window limiter (fail-open: a KV
+// hiccup must never lock members out).
 
 import { Hono } from "hono";
 import { getCookie } from "hono/cookie";
-import { resolveInvite, inviteAccepted } from "../tenant.js";
-import { deploymentProfile, operatorConfig } from "../deployment.js";
+import { resolveInvite, inviteAccepted, resolveIdentity, directoryFromEnv } from "../tenant.js";
+import { loadDeploymentProfile, operatorConfig } from "../deployment.js";
 import { underRateLimit } from "../rate-limit.js";
 import {
   createSession,
@@ -47,9 +49,15 @@ export const sessionArea = new Hono<ApiEnv>()
       // UNIFORM for unknown / expired / revoked / grace-rejected legacy code — never distinguish.
       return c.json({ error: "unauthorized" as const, message: "That invite code didn't work" }, 401);
     }
-    const token = await createSession(c.env.TENANT_KV, inv.tenant);
+    // The shared resolver: member liveness (a code whose member was revoked is dead even if
+    // the mapping lingers) + the lazy founding-member convergence — same uniform 401 on failure.
+    const resolved = await resolveIdentity(c.env, inv.tenant, inv.member, directoryFromEnv(c.env));
+    if ("error" in resolved) {
+      return c.json({ error: "unauthorized" as const, message: "That invite code didn't work" }, 401);
+    }
+    const token = await createSession(c.env.TENANT_KV, resolved.id, resolved.member);
     setSessionCookie(c, token);
-    return c.json({ tenant: { id: inv.tenant } });
+    return c.json({ tenant: resolved });
   })
   // Whoami — the SPA's boot check, and the ETag helper's living demonstrator. Besides
   // the tenant identity it carries the deployment-level config member surfaces need:
@@ -58,7 +66,9 @@ export const sessionArea = new Hono<ApiEnv>()
   .get("/session", requireSession, async (c) =>
     jsonWithEtag(c, {
       tenant: c.get("tenant"),
-      profile: deploymentProfile(c.env),
+      // The ONE profile accessor (src/deployment.ts) — the shipped D1 config channel;
+      // NULL/unset resolves to "self-hosted".
+      profile: await loadDeploymentProfile(c.env),
       operator: operatorConfig(c.env),
     }),
   )

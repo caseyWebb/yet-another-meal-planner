@@ -27,6 +27,8 @@
 import type { Env } from "./env.js";
 import { db } from "./db.js";
 import { loadRecipeIndex, loadRecipeEmbeddings } from "./recipe-index.js";
+import { memberViewer, friendHouseholds } from "./visibility.js";
+import { loadDeploymentProfile, type DeploymentProfile } from "./deployment.js";
 import { readOverlay, readPreferences } from "./profile-db.js";
 import { readLastCookedMap } from "./tools.js";
 import { loadOperatorConfig } from "./operator-config.js";
@@ -57,6 +59,28 @@ export interface TrendingRecipe extends CookbookRowRecipe {
 export interface TrendingResult {
   recipes: TrendingRecipe[];
   window_days: number;
+  /** The deployment profile the guard ran under — the browse page's label conditioner
+   *  ("Trending" self-hosted / "Popular with Friends" SaaS; one signal, one read). */
+  profile: DeploymentProfile;
+}
+
+/**
+ * The D31 minimum-signal guard, profile-parameterized — ONE guard function for both
+ * profiles, never the stricter rule deployment-wide:
+ *   * self-hosted: at least 2 cooks OR at least 2 distinct cooking tenants — the
+ *     existing guard VERBATIM, preserving the solo-operator degenerate case;
+ *   * SaaS: the contributing set must span at least 2 distinct households BESIDES the
+ *     caller's own — "cooked by 1 friend" never renders a cook signal.
+ */
+export function trendGuardQualifies(
+  profile: DeploymentProfile,
+  caller: string,
+  e: { cooks: number; tenants: Set<string> },
+): boolean {
+  if (profile === "self-hosted") return e.cooks >= 2 || e.tenants.size >= 2;
+  let nonCaller = 0;
+  for (const t of e.tenants) if (t !== caller) nonCaller++;
+  return nonCaller >= 2;
 }
 
 const TRENDING_WINDOW_DAYS = 60;
@@ -75,8 +99,14 @@ function toLite(slug: string, entry: IndexedRecipe): CookbookRowRecipe {
 }
 
 /**
- * Group-wide trending (D7): windowed, min-signal-guarded, reject-filtered, counts only,
- * deterministically ordered (cooks desc, distinct cooks desc, recency desc, slug asc).
+ * Trending under the lens (D7 + D31): windowed, PROFILE-PARAMETERIZED min-signal guard
+ * (`trendGuardQualifies` — one implementation, both profiles), reject-filtered, counts
+ * only, deterministically ordered (cooks desc, distinct cooks desc, recency desc, slug
+ * asc). The AGGREGATION SET is the caller's lens households: every household under
+ * self-hosted (the friend lens over implicit all-to-all IS deployment-wide — today's
+ * read, byte-for-byte), the caller's household plus its friend-seam households under
+ * SaaS. Results are further restricted to lens-visible recipes by the viewer-scoped
+ * index join. Never member identities — counts only (D31).
  */
 export async function readTrending(
   env: Env,
@@ -86,8 +116,10 @@ export async function readTrending(
   const windowDays = opts.windowDays ?? TRENDING_WINDOW_DAYS;
   const k = opts.k ?? TRENDING_K;
   const floor = new Date(Date.now() - windowDays * 86_400_000).toISOString().slice(0, 10);
+  const profile = await loadDeploymentProfile(env);
 
-  // NO tenant filter — deliberately group-wide (counts only; posture documented in
+  // NO tenant filter on the read — the aggregation set is applied in JS below (the
+  // module idiom: fake-D1-compatible full-read + JS; counts only; posture documented in
   // docs/ARCHITECTURE.md beside the cross-tenant flyer cache). The JS layer
   // re-validates every predicate so the read is exact on any D1 fidelity.
   const rows = await db(env).all<{ tenant: string; recipe: string | null; date: string; type: string }>(
@@ -95,9 +127,16 @@ export async function readTrending(
     floor,
   );
 
+  // SaaS: only the caller's lens households contribute cook events (the friend seam —
+  // empty until the friendships table ships, so the set is the caller's own household).
+  // Self-hosted: every household (no enumeration needed).
+  const lensSet =
+    profile === "saas" ? new Set<string>([tenant, ...(await friendHouseholds(env, tenant))]) : null;
+
   const agg = new Map<string, { cooks: number; tenants: Set<string>; last: string }>();
   for (const r of rows) {
     if (r.type !== "recipe" || !r.recipe || !(r.date >= floor)) continue;
+    if (lensSet !== null && !lensSet.has(r.tenant)) continue;
     const e = agg.get(r.recipe) ?? { cooks: 0, tenants: new Set<string>(), last: "" };
     e.cooks += 1;
     e.tenants.add(r.tenant);
@@ -105,19 +144,26 @@ export async function readTrending(
     agg.set(r.recipe, e);
   }
 
-  const [index, overlay] = await Promise.all([loadRecipeIndex(env), readOverlay(env, tenant)]);
+  const [index, overlay] = await Promise.all([loadRecipeIndex(env, memberViewer(tenant)), readOverlay(env, tenant)]);
 
   const qualified: TrendingRecipe[] = [];
   for (const [slug, e] of agg) {
-    // The min-signal guard: never rank single cooks as "trending".
-    if (e.cooks < 2 && e.tenants.size < 2) continue;
+    // The profile-parameterized min-signal guard: never rank single cooks as
+    // "trending", never render "cooked by 1 friend" (D31). Below the guard the set is
+    // EMPTY rather than ranking single cooks.
+    if (!trendGuardQualifies(profile, tenant, e)) continue;
     const entry = index[slug];
-    if (!entry) continue; // unprojected — dropped
-    if (overlay[slug]?.reject) continue; // the caller's personal lens
+    if (!entry) continue; // unprojected or out-of-lens — dropped
+    if (overlay[slug]?.reject) continue; // the caller's personal disposition
     // Meal candidates only (fail-open for an empty, not-yet-classified course): a
     // component the group cooked twice is real history, but not a meal to suggest.
     if (!isMealCourse(entry.course)) continue;
-    qualified.push({ ...toLite(slug, entry), cooks: e.cooks, cooks_by: e.tenants.size, last_cooked: e.last });
+    // `cooks_by` feeds the counts chip: self-hosted keeps the distinct-cooking-tenant
+    // count verbatim (today's chip); SaaS counts distinct FRIEND households (non-caller)
+    // so the "cooked by N friend households" copy is honest — never identities.
+    const cooksBy =
+      profile === "saas" ? [...e.tenants].filter((t) => t !== tenant).length : e.tenants.size;
+    qualified.push({ ...toLite(slug, entry), cooks: e.cooks, cooks_by: cooksBy, last_cooked: e.last });
   }
 
   qualified.sort(
@@ -128,7 +174,7 @@ export async function readTrending(
       a.slug.localeCompare(b.slug),
   );
 
-  return { recipes: qualified.slice(0, Math.max(1, k)), window_days: windowDays };
+  return { recipes: qualified.slice(0, Math.max(1, k)), window_days: windowDays, profile };
 }
 
 /** The caller's hard dietary-avoid terms from `preferences.dietary.avoid`, lowercased. */
@@ -185,8 +231,10 @@ export async function readPickedForYou(
   opts: { k?: number } = {},
 ): Promise<{ recipes: CookbookRowRecipe[] }> {
   const k = opts.k ?? PICKED_K;
+  // Candidates are the caller's LENS-VISIBLE corpus (the shared enforcement point): an
+  // out-of-lens recipe near the centroid is never a pick (member-app-differentiators).
   const [index, embeddings, overlay, lastCooked, prefs, operatorConfig] = await Promise.all([
-    loadRecipeIndex(env),
+    loadRecipeIndex(env, memberViewer(tenant)),
     loadRecipeEmbeddings(env),
     readOverlay(env, tenant),
     readLastCookedMap(env, tenant),

@@ -1,7 +1,7 @@
 // The Config area's shared chrome (ported from the SSR pages/config.tsx): the pill sub-nav
-// over the FOUR routed groups — Discovery (default, bare /config), Ingest Keys, Kroger
-// Flyer, Ranking — and the titled `cfg-section` wrapper each group composes its consoles
-// and editors into.
+// over the FIVE routed groups — Discovery (default, bare /config), Ingest Keys, Kroger
+// Flyer, Ranking, Deployment — and the titled `cfg-section` wrapper each group composes
+// its consoles and editors into.
 
 import * as React from "react";
 import { Link } from "@tanstack/react-router";
@@ -12,6 +12,7 @@ const GROUPS = [
   { to: "/config/ingest-keys", label: "Ingest Keys" },
   { to: "/config/flyer", label: "Kroger Flyer" },
   { to: "/config/ranking", label: "Ranking" },
+  { to: "/config/deployment", label: "Deployment" },
 ] as const;
 
 export const ConfigShell = ({ children }: { children?: React.ReactNode }) => (

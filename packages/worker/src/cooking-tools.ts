@@ -20,6 +20,7 @@ import { readWasteAnalyzer } from "./waste-analyzer.js";
 import { resolveWasteAvoidabilityMapping } from "./waste-avoidability.js";
 import type { WasteAnalyzer, WasteRange } from "./waste-shapes.js";
 import { loadRecipeIndex } from "./recipe-index.js";
+import { memberViewer } from "./visibility.js";
 import { mergeOverlay, type Overlay } from "./overlay.js";
 import { readOverlay, readPreferences } from "./profile-db.js";
 import type { RecipeIndex } from "./recipes.js";
@@ -79,7 +80,7 @@ export async function loadRetrospective(
 
   // Effective index for `underused`: shared objective fields (D1) merged with the
   // caller's overlay (favorite/reject) and the cooking-log-derived last_cooked.
-  const index = await loadRecipeIndex(env).catch((e) => {
+  const index = await loadRecipeIndex(env, memberViewer(username)).catch((e) => {
     throw new ToolError(
       "index_unavailable",
       `the recipe index is unavailable: ${e instanceof Error ? e.message : String(e)}`,

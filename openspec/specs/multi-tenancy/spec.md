@@ -5,12 +5,12 @@ TBD - created by archiving change multi-tenant-friend-group. Update Purpose afte
 ## Requirements
 ### Requirement: Worker is a multi-tenant OAuth 2.1 provider
 
-The Worker SHALL act as an OAuth 2.1 authorization server for the MCP surface so that each member of the friend group connects their own Claude.ai account to the one shared Worker. The Worker SHALL support the dynamic client registration + authorization-code + PKCE flow that the Claude.ai custom-connector requires, and SHALL issue an access token whose presentation on a later MCP request resolves to exactly one tenant. OAuth provider state (registered clients, authorization codes, grants/tokens) SHALL be stored in KV — no SQL database. The access token SHALL be the sole tenant identifier carried on MCP calls; the Worker SHALL NOT rely on Cloudflare Access for MCP-surface identity. Completing the `/authorize` step SHALL establish the member's identity by CROSS-DEVICE APPROVAL rather than by entering a standing secret on the OAuth page: the page mints a single-use approval reference and the member approves from the passkey-authenticated web app, which binds the tenant to the reference and completes the grant (see the `passkey-auth` capability). While the operator grace control (see `operator-admin`) is on, the `/authorize` page MAY additionally accept a legacy invite code as a bootstrap fallback for members who have not yet enrolled a passkey; once grace is off, a standing invite code SHALL NOT complete authorization. A malformed `/authorize` request SHALL render a clean error page with an HTTP 400 status — not a generic 500 — on both the GET and POST paths, consistent with the repo's "structured errors, not throws" convention at user-facing boundaries; `redirect_uri` validation remains unchanged (no open redirect).
+The Worker SHALL act as an OAuth 2.1 authorization server for the MCP surface so that each member of the friend group connects their own Claude.ai account to the one shared Worker. The Worker SHALL support the dynamic client registration + authorization-code + PKCE flow that the Claude.ai custom-connector requires, and SHALL issue an access token whose presentation on a later MCP request resolves to exactly one tenant and one member within it. OAuth provider state (registered clients, authorization codes, grants/tokens) SHALL be stored in KV — no SQL database. The access token SHALL be the sole identity carried on MCP calls; the Worker SHALL NOT rely on Cloudflare Access for MCP-surface identity. Completing the `/authorize` step SHALL establish the member's identity by CROSS-DEVICE APPROVAL rather than by entering a standing secret on the OAuth page: the page mints a single-use approval reference and the member approves from the passkey-authenticated web app, which binds the approving member's `(tenant, member)` pair to the reference and completes the grant with BOTH ids in its props (`{ tenantId, memberId }`); the grant's `userId` SHALL remain the tenant id so tenant-keyed grant enumeration (the roster's active/pending derivation) is unchanged (see the `passkey-auth` capability). While the operator grace control (see `operator-admin`) is on, the `/authorize` page MAY additionally accept a legacy invite code as a bootstrap fallback for members who have not yet enrolled a passkey, binding the `(tenant, member)` pair the invite resolves to; once grace is off, a standing invite code SHALL NOT complete authorization. A malformed `/authorize` request SHALL render a clean error page with an HTTP 400 status — not a generic 500 — on both the GET and POST paths, consistent with the repo's "structured errors, not throws" convention at user-facing boundaries; `redirect_uri` validation remains unchanged (no open redirect).
 
 #### Scenario: A friend connects their own Claude.ai by approval
 
 - **WHEN** a friend adds the connector in their Claude.ai account and approves the pending connection from their passkey-authenticated web app
-- **THEN** the Worker issues an access token bound to that friend's tenant, and subsequent MCP calls carrying it are served in that tenant's context
+- **THEN** the Worker issues an access token bound to that friend's tenant and member (props `{ tenantId, memberId }`, `userId` = tenant id), and subsequent MCP calls carrying it are served in that tenant's context with that member's attribution
 
 #### Scenario: Provider state lives in KV
 
@@ -48,36 +48,27 @@ Completing the OAuth authorization SHALL require the authenticating identity to 
 
 ### Requirement: Per-request tenant resolution
 
-Every MCP request SHALL be resolved to a tenant from its bearer access token before any tool runs. A request with a missing, invalid, or unresolvable token SHALL be rejected with a structured `unauthorized` response and SHALL NOT reach any tool. The MCP server instance handling a request SHALL be constructed for the resolved tenant so that no tool can read or write another tenant's data.
+Every MCP request SHALL be resolved to a `(tenantId, memberId)` pair from its bearer access token before any tool runs, through one shared identity resolver also used by the member `/api` session path: the tenant id is canonicalized and re-checked against the allowlist exactly as before, and the member id is checked for liveness against the `members` table (subject to the lazy founding-member convergence guard). Grant props carry `{ tenantId, memberId }`; a grant minted before the member-identity split carries `{ tenantId }` only and SHALL resolve to the founding member (`memberId = tenantId`) — the uniform legacy-defaulting rule. A request with a missing, invalid, or unresolvable token, an unallowlisted tenant, or a member id with no live `members` row SHALL be rejected with a structured `unauthorized` response and SHALL NOT reach any tool. The MCP server instance handling a request SHALL be constructed for the resolved tenant-and-member context so that no tool can read or write another tenant's data; the tenant remains the isolation boundary and the member is attribution within it.
 
-#### Scenario: Token resolves to a tenant
+#### Scenario: Token resolves to a tenant and member
 
-- **WHEN** an MCP request arrives with a valid issued access token
-- **THEN** the Worker resolves it to the owning tenant and serves the request in that tenant's context
+- **WHEN** an MCP request arrives with a valid issued access token whose grant props carry `{ tenantId, memberId }`
+- **THEN** the Worker resolves the pair, re-checks the tenant against the allowlist and the member against the `members` table, and serves the request in that tenant's context with that member's attribution
+
+#### Scenario: A pre-split grant resolves to the founding member
+
+- **WHEN** an MCP request arrives with a token whose grant props carry only `{ tenantId }`
+- **THEN** the Worker resolves `memberId = tenantId` (the founding member) and the request is served exactly as it was before the split
 
 #### Scenario: Unresolvable token is rejected
 
 - **WHEN** an MCP request arrives with no token or a token that does not resolve to an allowlisted tenant
 - **THEN** the Worker returns a structured `unauthorized` response and runs no tool
 
-### Requirement: Tenant data isolation and GitHub App installation tokens
+#### Scenario: A revoked member's token stops resolving
 
-Per-tenant data isolation SHALL be enforced in D1: every per-tenant table carries a `tenant` column, and the MCP server instance is constructed for the resolved tenant so each query is scoped to that tenant — a tool resolved for one tenant cannot read or write another tenant's rows. Repo reads and writes — the **shared** recipe corpus (`recipes/*.md`) plus shared reference markdown, the only data the Worker keeps in GitHub — SHALL be authenticated with a short-lived **GitHub App installation token** minted on demand from the App's credentials, scoped to the installation covering the data repository; there is no per-tenant repo subtree, because personal and operational state lives in D1, not in GitHub. The Worker SHALL resolve **which installation covers the data repository at runtime** from the App's installations (`GET /app/installations`, authenticated with the App JWT), caching the resolved installation id; it SHALL NOT require a hand-configured installation id. The Worker SHALL NOT use a personal access token for repo access, and no per-tenant long-lived user PAT SHALL be stored. Installation tokens SHALL be treated as ephemeral (re-minted on expiry).
-
-#### Scenario: Per-tenant writes are isolated in D1; recipe writes use a scoped installation token
-
-- **WHEN** a tool for tenant A persists a change to A's personal state, or commits a shared recipe
-- **THEN** A's personal state is written to D1 scoped to tenant A's rows (never another tenant's), and a shared-recipe commit uses a GitHub App installation token covering the data repo (never a PAT)
-
-#### Scenario: No PAT
-
-- **WHEN** the Worker configuration and secrets are inspected
-- **THEN** repo access is via the GitHub App (id + private key), with no repo-wide PAT and no stored per-user PAT
-
-#### Scenario: Installation id is resolved from the App, not hand-configured
-
-- **WHEN** the Worker needs an installation token and no installation id is configured
-- **THEN** it lists the App's installations with the App JWT, selects the one covering the data repo, caches the id, and mints the token — requiring no `GITHUB_INSTALLATION_ID` var
+- **WHEN** an MCP request arrives with a token whose grant names a member that has been removed from the `members` table while the tenant remains allowlisted and holds other member rows
+- **THEN** the member-liveness check fails, the Worker returns a structured `unauthorized` response, and no tool runs — even though the grant record still exists in the OAuth store
 
 ### Requirement: Per-tenant Kroger refresh-token storage
 
@@ -147,4 +138,106 @@ The Worker SHALL guarantee tenant-id uniqueness even when identities are created
 
 - **WHEN** the tenant-registry backfill runs over the existing KV allowlist, including more than once
 - **THEN** every existing tenant appears exactly once in the registry and re-running the backfill changes nothing
+
+### Requirement: A members table is the member-identity substrate
+
+The Worker SHALL maintain a D1 `members` table — `id` (TEXT primary key), `tenant` (owning household), `handle` (deployment-unique display key, unique-indexed), `created_at` — accessed only through `src/db.ts`, as the substrate of member identity within the tenant (household) boundary. Every tenant created by operator onboarding or by a tenant-creating signup path SHALL have a FOUNDING MEMBER whose member id and handle EQUAL the canonical tenant id, so every credential value issued before the split (grant props, session records, WebAuthn user handles, invite mappings, note-author values) is already a valid member id and NOTHING is re-keyed; a tenant spawned by the member-move primitive is instead founded by the moving member, who KEEPS their existing member id and handle (member ids never change — WebAuthn user handles are burned into authenticators). NON-FOUNDING members SHALL be minted with server-generated ULID member ids and a member-chosen handle. Every NEW handle or username mint — join-link and invitation handles, self-service usernames, operator-onboarded usernames — SHALL validate against ONE handle grammar, `^[a-z0-9_]{3,20}$`; every handle and tenant id already issued is grandfathered verbatim (including values outside the grammar), and machine-suffixed spawned-tenant ids use a hyphen deliberately outside the grammar so they can never collide with a future mint. Handle RENAME rules remain owned by a later change.
+
+Every tenant-creation path SHALL mint the founding member in the same flow that creates the tenant: operator onboarding, group-invite-code self-service redemption, friend-tier invite-link redemption, the member-move spawn, and — for tenants that predate this table — an idempotent seed from the D1 `tenants` registry plus a lazy convergence guard at identity resolution. The guard SHALL mint a founding member row ONLY when the presented member id equals the tenant id AND the tenant has zero `members` rows; under any other condition a missing member row SHALL resolve to a structured `unauthorized`. The `members` table SHALL be purged with the household (it joins the household-purge table set).
+
+#### Scenario: Existing tenants are seeded with founding members
+
+- **WHEN** the member-identity migration runs over a deployment with existing tenants, including more than once
+- **THEN** every tenant in the `tenants` registry has exactly one `members` row with `id = tenant`, `handle = tenant`, and re-running the seed changes nothing
+
+#### Scenario: New tenants are born with a founding member
+
+- **WHEN** the operator onboards `casey`, or a visitor redeems a group invite code or a friend-tier invite link choosing the username `bob`
+- **THEN** the created tenant has a `members` row whose id and handle equal the canonical tenant id, written in the same flow that creates the tenant
+
+#### Scenario: A second member is minted with a ULID and a grammar-valid handle
+
+- **WHEN** a household-tier invitation or invite link is accepted with the chosen handle `grandma_j`
+- **THEN** a `members` row is created under the inviter's tenant with a server-minted ULID id and handle `grandma_j`, and a chosen handle failing `^[a-z0-9_]{3,20}$` or colliding with any existing handle is refused with a structured error
+
+#### Scenario: Grandfathered identities keep working; new mints are gated
+
+- **WHEN** a pre-existing tenant id such as `caseys-kitchen` (hyphenated) resolves identity, and separately a new signup chooses `caseys-kitchen2`
+- **THEN** the existing tenant and its founding handle work unmodified, while the new mint is refused for failing the handle grammar
+
+#### Scenario: The lazy guard converges a pre-split tenant but resurrects no one
+
+- **WHEN** a request resolves member id equal to its allowlisted tenant id and that tenant has zero `members` rows
+- **THEN** the founding member row is minted and the request proceeds; but when the tenant already has any `members` row and the presented member id has none, the request is rejected `unauthorized` and no row is minted
+
+#### Scenario: Handles are unique across the deployment
+
+- **WHEN** a member row is inserted whose handle collides with any existing member's handle
+- **THEN** the insert fails on the unique index and no duplicate handle ever exists
+
+### Requirement: Tenant (household) data isolation
+
+Per-tenant data isolation SHALL be enforced in D1 with the tenant as the **household** boundary: every per-tenant table carries a `tenant` column, the MCP server instance and the `/api` session context are constructed for the resolved `(tenantId, memberId)` pair, and each query is scoped to that tenant — a tool or route resolved for one household cannot read or write another household's rows. The member is attribution within the household, never an isolation boundary of its own. Shared corpus content (R2 recipe/guidance markdown and the D1 projections derived from it) is deployment-shared by construction and crosses household boundaries ONLY through the defined visibility lens and aggregate reads (the `shared-corpus` capability); data derived from household behavior (cook activity, favorites, prices paid, follows) is memoized within its owning household and crosses households exclusively through those same lenses/aggregates. The Worker SHALL hold no GitHub credentials and make no GitHub API call on any data path: the authored corpus lives in R2 and operational state in D1/KV.
+
+#### Scenario: Household writes are isolated in D1
+
+- **WHEN** a tool for household A persists a change to A's state
+- **THEN** the write is scoped to tenant A's rows and can never touch another household's rows
+
+#### Scenario: Cross-household reads go through the lens
+
+- **WHEN** a read surface exposes another household's recipe or cook activity to a member of household A
+- **THEN** it does so only through the visibility lens or a defined counts-only aggregate — never by raw cross-tenant query reuse
+
+#### Scenario: No GitHub credential exists
+
+- **WHEN** the Worker's configuration, secrets, and data paths are inspected
+- **THEN** there is no GitHub App, installation token, or PAT, and no data path performs a GitHub API call
+
+### Requirement: A member-move primitive relocates member-scoped state atomically
+
+The Worker SHALL provide ONE member-move primitive that relocates a member between tenants with an explicit move manifest, used by leave-household, member-remove (eviction), and household-accept: the `members` row's tenant, the member's `webauthn_credentials` rows, the nicknames they set, and their live web sessions (re-written to the new tenant by the session-scan idiom) move together; authored `recipe_notes`/`store_notes` rows are already keyed by the stable member id and need no re-key; outstanding KV bootstrap invites resolving to the member are deleted. The member's id and handle SHALL NOT change. Pre-move MCP grants SHALL NOT survive (grant props are immutable): the shared resolver's `(tenant, member)` pairing check stops resolving them and the member re-connects Claude.ai — the flows state this. In v1 the manifest deliberately EXCLUDES state that is not yet member-keyed (favorites/rejects overlay, taste and dietary text, cooking history — they remain household state), and every flow whose confirmation enumerates what does not carry over SHALL include them. The primitive SHALL refuse to move a tenant's last member other than as part of household-accept dissolution, and SHALL refuse a destination at the household size bound.
+
+Leave-household and member-remove SHALL target a FRESHLY SPAWNED household: a new tenant (registry row, allowlist entry, blank household state) whose id is the mover's handle when free, else the handle with the smallest free hyphen-numeric suffix; the mover founds it keeping their id and handle. The old household keeps ALL household-scoped state including its entire cookbook — a leaver takes no `recipe_imports` rows and starts at the cold-start floor.
+
+Household-accept for a mover who is the SOLE member of an existing household SHALL run member-move PLUS tenant dissolution, only after an explicit in-flow confirmation enumerating what does NOT carry over: the old tenant's `recipe_imports` rows re-key to the absorbing household (insert-or-ignore under the `(recipe, tenant)` key, old rows deleted), the old household state is purged via the household-purge path minus member-scoped rows, and the old tenant retires — allowlist entry and registry row removed, outgoing requests cancelled, invite links revoked, friendships severed. A member of a multi-member household SHALL be refused with a structured error directing them to leave-household first (v1: multi-member households never merge wholesale).
+
+#### Scenario: Leaving spawns a household and takes only member-scoped state
+
+- **WHEN** member `@sam` (ULID id, one of three members of household `casey`) leaves the household
+- **THEN** a new tenant exists (id `sam`, or `sam-2` if `sam` is taken) founded by the same member id and handle, `@sam`'s passkeys, sessions (re-keyed), and set nicknames follow, household `casey` keeps its pantry/plan/list/cookbook untouched, and `@sam`'s new household has zero `recipe_imports` rows
+
+#### Scenario: Sessions survive a move; grants do not
+
+- **WHEN** a member with a live web session and a connected Claude.ai grant moves households
+- **THEN** their next `/api` request resolves in the new tenant (the session record was re-written), while their next MCP request fails the resolver's pairing check with a structured `unauthorized` until they re-connect
+
+#### Scenario: Sole-member household-accept dissolves the old tenant
+
+- **WHEN** `@bob`, sole member of household `bob`, accepts a household invitation from `casey` after the confirmation that enumerates the non-carried-over state (pantry, plan, list, staples, stockup, ready-to-eat, stores and store notes, Kroger link, and — v1 — favorites, taste and dietary text, cooking history)
+- **THEN** `@bob` is a member of `casey`, `bob`'s recipe grants now belong to `casey` (duplicates collapsed by the primary key), `bob`'s household rows are purged, and `tenant:bob` no longer exists on the allowlist or in the registry
+
+#### Scenario: A multi-member requester must leave first
+
+- **WHEN** a member of a multi-member household accepts a household invitation without having left
+- **THEN** the accept is refused with a structured error naming leave-household as the prerequisite, and nothing moves
+
+### Requirement: Household membership is governed by any-member authority with hard floors
+
+Any member of a household SHALL hold full membership authority for that household: removing any other member, accepting or declining inbound requests, cancelling outgoing requests and invite links, severing friendships, and blocking — every destructive action behind an explicit member-app confirmation (nothing removes instantly). No owner or role distinction SHALL exist (the mock's "Household owner" label stays unused). One member's block SHALL bind the household (see `social-graph`). Hard floors: a household SHALL always retain at least one member — the last member can neither leave nor be removed, and the refusal names household-accept (dissolution) and operator household-purge as the alternatives; the operator-surface last-member member-revoke refusal is unchanged. A household SHALL hold at most 8 members (placeholder bound, tunable at implementation), enforced at household-accept and at invite-link redemption with a structured error.
+
+#### Scenario: Any member can remove another, with a confirm
+
+- **WHEN** a non-founding member confirms removal of another member (founding or not) of their household
+- **THEN** the removed member is moved to a freshly spawned household per the member-move primitive — their account, credentials, handle, and authored notes survive — and the household continues without them
+
+#### Scenario: The last member hits the floor
+
+- **WHEN** the sole remaining member of a household attempts to leave or a flow attempts to remove them
+- **THEN** the operation is refused with a structured error naming household-accept-with-dissolution and operator household-purge as the ways out, and nothing changes
+
+#### Scenario: The size bound refuses a ninth member
+
+- **WHEN** a household holds 8 members and a household-tier accept or invite-link redemption would add a ninth
+- **THEN** the operation fails with a structured error naming the bound, no member is minted, and (for a link) the single-use token is not consumed
 

@@ -1,24 +1,36 @@
-// Deployment-level identity for member surfaces (connect-modal): the D9 deployment
-// profile and the operator's public-facing config. Both are read by the whoami
-// response (src/api/session.ts) so the SPA can template setup copy and gate
-// profile-dependent surfaces — never secrets, never per-tenant data.
+// Deployment-level identity for member surfaces (connect-modal) and the visibility
+// lens: the D9 deployment profile and the operator's public-facing config. The profile
+// is read by the whoami response (src/api/session.ts) so the SPA can template setup
+// copy and gate profile-dependent surfaces, and by every profile-conditioned Worker
+// path (the lens, the trending guard, the curated sweep, the admin Config card) —
+// never secrets, never per-tenant data.
 
 import type { Env } from "./env.js";
+import { db } from "./db.js";
 
-/** The D9 deployment profiles. `self-hosted` hides the friends surface and treats the
- *  deployment as one implicit all-to-all friend graph; `saas` enables the full social
- *  surface. Long-term configuration, not migration scaffolding. */
+/** The D9 deployment profiles. `self-hosted` treats the deployment as one implicit
+ *  all-to-all friend graph (today's shared-corpus experience, byte-for-byte); `saas`
+ *  scopes visibility to own/friend/curated grants. Long-lived configuration, not
+ *  migration scaffolding. */
 export type DeploymentProfile = "self-hosted" | "saas";
 
 /**
  * Resolve the deployment profile. This accessor is the ONE site that names the
- * profile's source: the profile flag channel does not exist yet, and every live
- * deployment is self-hosted, so it returns the constant. When the flag channel ships
- * (the households/friends band), re-point this function — its callers (whoami, and any
- * later profile-gated read) stay unchanged.
+ * profile's source: the `deployment_profile` column on the `operator_config` D1
+ * singleton (migration 0059 — the deployment-global config channel; a wrangler var is
+ * deliberately NOT the channel: the operator deploy merge drops code-repo `vars`, and
+ * a var would make the flip guards unenforceable). NULL/absent — including a missing
+ * singleton row — resolves to `"self-hosted"`, so existing deployments need no
+ * configuration or data change. An UNREADABLE table propagates its structured
+ * `storage_error` (a SaaS deployment must never silently degrade to the wider
+ * self-hosted lens on a D1 hiccup). Every profile-conditioned path (lens, trending
+ * guard, curated sweep, whoami, admin) takes this value; no other site names the source.
  */
-export function deploymentProfile(_env: Env): DeploymentProfile {
-  return "self-hosted";
+export async function loadDeploymentProfile(env: Env): Promise<DeploymentProfile> {
+  const row = await db(env).first<{ deployment_profile: string | null }>(
+    "SELECT deployment_profile FROM operator_config WHERE id = 1",
+  );
+  return row?.deployment_profile === "saas" ? "saas" : "self-hosted";
 }
 
 /** The operator identity the connect modal templates into its setup steps. */

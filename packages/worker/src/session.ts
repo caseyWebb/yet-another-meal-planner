@@ -6,13 +6,14 @@
 // identity-adjacent operational state, never domain data); KV `expirationTtl` is the
 // SINGLE expiry authority (no second clock to drift). `requireSession` is the
 // member-facing analog of `requireAccess`: cookie → KV record → the SAME
-// `resolveTenant` allowlist re-check the MCP path runs, so a revoked member's live
-// session stops resolving on their next request, before any purge runs.
+// `resolveIdentity` allowlist re-check + member-liveness check the MCP path runs, so
+// a revoked member's live session stops resolving on their next request, before any
+// purge runs.
 
 import type { Context, MiddlewareHandler } from "hono";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import type { Env } from "./env.js";
-import { resolveTenant, directoryFromEnv, type Tenant } from "./tenant.js";
+import { resolveIdentity, directoryFromEnv, type Tenant } from "./tenant.js";
 
 /** The KV key prefix session records live under in TENANT_KV. */
 export const SESSION_PREFIX = "session:";
@@ -35,6 +36,10 @@ export const SESSION_COOKIE = "__Host-session";
 export interface SessionRecord {
   /** The member's canonical tenant id (re-checked against the allowlist on every request). */
   tenant: string;
+  /** The member id the session is bound to (checked for liveness on every request). Absent
+   *  on records minted before the member-identity split — those resolve to the founding
+   *  member and converge to this shape on their next throttled rolling refresh. */
+  member?: string;
   created_at: number;
   refreshed_at: number;
 }
@@ -47,13 +52,18 @@ function base64url(bytes: Uint8Array): string {
 }
 
 /**
- * Mint a session for `tenant`: a 32-byte (256-bit) token from `crypto.getRandomValues`
- * — unguessable, never logged — written as `session:<token>` with the ~90-day TTL.
- * Returns the token for the cookie.
+ * Mint a session bound to a `(tenant, member)` pair: a 32-byte (256-bit) token from
+ * `crypto.getRandomValues` — unguessable, never logged — written as `session:<token>`
+ * with the ~90-day TTL. Returns the token for the cookie.
  */
-export async function createSession(kv: KVNamespace, tenant: string, now: number = Date.now()): Promise<string> {
+export async function createSession(
+  kv: KVNamespace,
+  tenant: string,
+  member: string,
+  now: number = Date.now(),
+): Promise<string> {
   const token = base64url(crypto.getRandomValues(new Uint8Array(32)));
-  const record: SessionRecord = { tenant, created_at: now, refreshed_at: now };
+  const record: SessionRecord = { tenant, member, created_at: now, refreshed_at: now };
   await kv.put(`${SESSION_PREFIX}${token}`, JSON.stringify(record), { expirationTtl: SESSION_TTL_S });
   return token;
 }
@@ -123,12 +133,14 @@ export type ApiEnv = { Bindings: Env; Variables: { tenant: Tenant } };
  * it is attached inline as route-level middleware on each session-gated route (e.g.
  * `.get("/session", requireSession, ...)` in `src/api/session.ts`), so a new route
  * that needs auth must add it explicitly; forgetting to leaves the route open. Cookie
- * → KV record → `resolveTenant` (allowlist re-check, `recordSeen: true` — a
+ * → KV record → `resolveIdentity` (allowlist re-check + member liveness, with a legacy
+ * record's absent `member` defaulting to the founding member; `recordSeen: true` — a
  * session-authenticated API request is genuine member activity, same as an MCP call;
  * the touch is throttled + best-effort). Missing/unknown/expired/unresolvable sessions
  * get the structured `unauthorized` 401 (uniform — the SPA branches on the code and
- * shows login). A resolving request rides the throttled rolling refresh, then the
- * handler sees the SAME normalized `Tenant` the MCP path builds.
+ * shows login). A resolving request rides the throttled rolling refresh — re-written
+ * carrying the resolved member id, so live legacy sessions converge organically — then
+ * the handler sees the SAME normalized `Tenant` the MCP path builds.
  */
 export const requireSession: MiddlewareHandler<ApiEnv> = async (c, next) => {
   const unauthorized = (message: string) => c.json({ error: "unauthorized" as const, message }, 401);
@@ -136,9 +148,9 @@ export const requireSession: MiddlewareHandler<ApiEnv> = async (c, next) => {
   if (!token) return unauthorized("No session");
   const record = await readSession(c.env.TENANT_KV, token);
   if (!record) return unauthorized("No session");
-  const resolved = await resolveTenant(c.env, record.tenant, directoryFromEnv(c.env), true);
+  const resolved = await resolveIdentity(c.env, record.tenant, record.member, directoryFromEnv(c.env), true);
   if ("error" in resolved) return unauthorized("No session");
-  await refreshSession(c.env.TENANT_KV, token, record);
+  await refreshSession(c.env.TENANT_KV, token, { ...record, member: resolved.member });
   c.set("tenant", resolved);
   await next();
 };

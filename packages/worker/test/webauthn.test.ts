@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { rpFromRequest, finishRegistration, finishAuthentication } from "../src/webauthn.js";
+import { rpFromRequest, beginRegistration, finishRegistration, finishAuthentication } from "../src/webauthn.js";
+import { isoBase64URL, isoUint8Array } from "@simplewebauthn/server/helpers";
 import { fakeD1 } from "./fake-d1.js";
 import type { Env } from "../src/env.js";
 import type { RegistrationResponseJSON, AuthenticationResponseJSON } from "@simplewebauthn/server";
@@ -24,6 +25,16 @@ describe("webauthn ceremonies", () => {
       rpID: "grocery.example.com",
       origin: "https://grocery.example.com",
     });
+  });
+
+  it("beginRegistration sets the user handle to the MEMBER id and the names to the handle", async () => {
+    const options = await beginRegistration(makeEnv(), req(), { id: "m2", handle: "pat" }, []);
+    // The WebAuthn user handle IS the member id (member-identity-split D4) — for a founding
+    // member this equals the tenant id, i.e. exactly what pre-split credentials carry.
+    expect(options.user.id).toBe(isoBase64URL.fromBuffer(isoUint8Array.fromUTF8String("m2")));
+    expect(options.user.name).toBe("pat");
+    expect(options.user.displayName).toBe("pat");
+    expect(options.authenticatorSelection?.residentKey).toBe("required");
   });
 
   it("finishRegistration returns null on a malformed response (no throw escapes)", async () => {

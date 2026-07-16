@@ -78,6 +78,7 @@ function makeDeps(opts: FakeOpts) {
       return slug;
     },
     recordMatches: async () => {},
+    grantCurated: async () => {},
     recordLog: async (e) => {
       calls.logs.push(e);
     },

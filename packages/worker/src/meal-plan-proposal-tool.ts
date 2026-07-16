@@ -17,6 +17,7 @@ import type { Env } from "./env.js";
 import type { Tenant } from "./tenant.js";
 import { runTool, ToolError } from "./errors.js";
 import { loadRecipeIndex, loadRecipeEmbeddings } from "./recipe-index.js";
+import { memberViewer } from "./visibility.js";
 import { filterRecipes, isMealCourse, type RecipeIndex } from "./recipes.js";
 import { mergeOverlay, type Overlay } from "./overlay.js";
 import { rankCandidates, resolveRankParams, type RankNudge, type SearchCandidate } from "./semantic-search.js";
@@ -264,7 +265,9 @@ export async function runProposeMealPlan(env: Env, tenant: Tenant, input: Propos
 
   const [index, overlay, lastCooked, owned, embeddings, prefs, operatorConfig, ctx, palette, vibeVectors, lastSatisfied, pantry] =
     await Promise.all([
-      loadRecipeIndex(env).catch((e) => {
+      // The propose candidate POOLS read the caller's lens-visible corpus (shared-corpus
+      // D11): an out-of-lens recipe can never be proposed.
+      loadRecipeIndex(env, memberViewer(tenant.id, tenant.member)).catch((e) => {
         throw new ToolError("index_unavailable", `the recipe index is unavailable: ${e instanceof Error ? e.message : String(e)}`);
       }),
       deps.getOverlay(),

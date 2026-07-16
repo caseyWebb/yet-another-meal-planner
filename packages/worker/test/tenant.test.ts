@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   resolveTenant,
+  resolveIdentity,
   resolveInvite,
   inviteAccepted,
   inviteGraceEnabled,
@@ -17,7 +18,13 @@ import type { Env } from "../src/env.js";
 import { fakeD1 } from "./fake-d1.js";
 import { db } from "../src/db.js";
 
-const env = {} as unknown as Env;
+/** An env whose D1 carries a seeded `members` table (the resolver's liveness check).
+ *  Rows are `{ id, tenant, handle, created_at }`; default empty (the lazy guard mints). */
+function membersEnv(members: Record<string, unknown>[] = []) {
+  return fakeD1({ tables: { members, tenant_activity: [] } });
+}
+
+const env = membersEnv().env;
 
 const ALICE: TenantRecord = { id: "alice" };
 
@@ -45,10 +52,10 @@ const isUnauthorized = (r: Tenant | Unauthorized): r is Unauthorized =>
   (r as Unauthorized).error === "unauthorized";
 
 describe("resolveTenant (from a provider-validated tenantId)", () => {
-  it("builds the Tenant from the allowlisted id", async () => {
+  it("builds the Tenant from the allowlisted id, defaulting to the founding member", async () => {
     const t = (await resolveTenant(env, "alice", store({ alice: ALICE }))) as Tenant;
     expect(isUnauthorized(t)).toBe(false);
-    expect(t).toEqual({ id: "alice" });
+    expect(t).toEqual({ id: "alice", member: "alice" });
   });
 
   it("rejects a missing tenantId", async () => {
@@ -82,15 +89,71 @@ describe("resolveTenant (from a provider-validated tenantId)", () => {
 });
 
 describe("tenantFromRecord", () => {
-  it("normalizes the record id into the Tenant", () => {
-    expect(tenantFromRecord(env, { id: "Bob" })).toEqual({ id: "bob" });
+  it("normalizes the record id into the Tenant, defaulting member to the founding member", () => {
+    expect(tenantFromRecord(env, { id: "Bob" })).toEqual({ id: "bob", member: "bob" });
+    expect(tenantFromRecord(env, { id: "Bob" }, "m1")).toEqual({ id: "bob", member: "m1" });
+  });
+});
+
+describe("resolveIdentity (the shared (tenantId, memberId) resolver)", () => {
+  const CASEY_ROW = { id: "casey", tenant: "casey", handle: "casey", created_at: 1 };
+
+  it("pre-split props { tenantId } resolve to the founding member (legacy defaulting)", async () => {
+    const fake = membersEnv([CASEY_ROW]);
+    const t = (await resolveIdentity(fake.env, "casey", undefined, store({ casey: { id: "casey" } }))) as Tenant;
+    expect(t).toEqual({ id: "casey", member: "casey" });
+  });
+
+  it("resolves an explicit { tenantId, memberId } pair exactly", async () => {
+    const fake = membersEnv([
+      CASEY_ROW,
+      { id: "m2", tenant: "casey", handle: "pat", created_at: 2 },
+    ]);
+    const t = (await resolveIdentity(fake.env, "casey", "m2", store({ casey: { id: "casey" } }))) as Tenant;
+    expect(t).toEqual({ id: "casey", member: "m2" });
+  });
+
+  it("rejects a revoked member while the tenant survives — no resurrection when other rows exist", async () => {
+    // Only m2 remains: the founding member was revoked. Presenting the founding id must NOT
+    // re-mint it (the lazy guard requires ZERO member rows), and m3 never existed.
+    const fake = membersEnv([{ id: "m2", tenant: "casey", handle: "pat", created_at: 2 }]);
+    const dir = store({ casey: { id: "casey" } });
+    expect(isUnauthorized(await resolveIdentity(fake.env, "casey", "casey", dir))).toBe(true);
+    expect(isUnauthorized(await resolveIdentity(fake.env, "casey", "m3", dir))).toBe(true);
+    // Nothing was minted by either rejection.
+    expect(fake.tables.members).toHaveLength(1);
+  });
+
+  it("converges a zero-member tenant via the lazy founding-member guard", async () => {
+    const fake = membersEnv([]);
+    const t = (await resolveIdentity(fake.env, "casey", "casey", store({ casey: { id: "casey" } }))) as Tenant;
+    expect(t).toEqual({ id: "casey", member: "casey" });
+    expect(fake.tables.members).toEqual([
+      expect.objectContaining({ id: "casey", tenant: "casey", handle: "casey" }),
+    ]);
+  });
+
+  it("never reaches the guard for a purged tenant — the allowlist re-check fails first", async () => {
+    const fake = membersEnv([]);
+    expect(isUnauthorized(await resolveIdentity(fake.env, "casey", "casey", store({})))).toBe(true);
+    expect(fake.tables.members).toEqual([]); // nothing minted
+  });
+
+  it("canonicalizes a mixed-case tenant id before every lookup (directory AND members)", async () => {
+    const fake = membersEnv([CASEY_ROW]);
+    const dir = store({ casey: { id: "casey" } });
+    for (const given of ["Casey", "CASEY", "  casey "]) {
+      const t = (await resolveIdentity(fake.env, given, undefined, dir)) as Tenant;
+      expect(t).toEqual({ id: "casey", member: "casey" });
+    }
+    expect(fake.tables.members).toHaveLength(1); // liveness hit the seeded row; no re-mint
   });
 });
 
 describe("resolveInvite (the §3.2 identity step)", () => {
   it("maps a valid legacy (bare-string) code to its allowlisted username", async () => {
     const kv = memKv({ "invite:LET-ME-IN": "alice", "tenant:alice": JSON.stringify(ALICE) });
-    expect(await resolveInvite(kv, "LET-ME-IN")).toEqual({ tenant: "alice", kind: "legacy" });
+    expect(await resolveInvite(kv, "LET-ME-IN")).toEqual({ tenant: "alice", member: "alice", kind: "legacy" });
   });
 
   it("maps a JSON bootstrap code to its allowlisted username", async () => {
@@ -98,7 +161,7 @@ describe("resolveInvite (the §3.2 identity step)", () => {
       "invite:BOOT": JSON.stringify({ v: 1, tenant: "alice", single_use: true, expires_at: 0 }),
       "tenant:alice": JSON.stringify(ALICE),
     });
-    expect(await resolveInvite(kv, "BOOT")).toEqual({ tenant: "alice", kind: "bootstrap" });
+    expect(await resolveInvite(kv, "BOOT")).toEqual({ tenant: "alice", member: "alice", kind: "bootstrap" });
   });
 
   it("returns null for an unknown code", async () => {
@@ -120,7 +183,7 @@ describe("resolveInvite (the §3.2 identity step)", () => {
     // Allowlist keyed lowercase (as minted); a stray mixed-case invite target still
     // resolves to the canonical id via the lowercase directory lookup.
     const kv = memKv({ "invite:CODE": "Casey", "tenant:casey": JSON.stringify({ id: "casey" }) });
-    expect(await resolveInvite(kv, "CODE")).toEqual({ tenant: "casey", kind: "legacy" });
+    expect(await resolveInvite(kv, "CODE")).toEqual({ tenant: "casey", member: "casey", kind: "legacy" });
   });
 });
 
@@ -282,13 +345,13 @@ describe("invite grace control (webauthn-passkey-auth)", () => {
   });
 
   it("a bootstrap code is accepted regardless of grace (the recovery bypass)", () => {
-    const boot = { tenant: "alice", kind: "bootstrap" } as const;
+    const boot = { tenant: "alice", member: "alice", kind: "bootstrap" } as const;
     expect(inviteAccepted(boot, on("off"))).toBe(true);
     expect(inviteAccepted(boot, {} as Env)).toBe(true);
   });
 
   it("a legacy code is accepted only while grace is on", () => {
-    const legacy = { tenant: "alice", kind: "legacy" } as const;
+    const legacy = { tenant: "alice", member: "alice", kind: "legacy" } as const;
     expect(inviteAccepted(legacy, {} as Env)).toBe(true);
     expect(inviteAccepted(legacy, on("off"))).toBe(false);
   });

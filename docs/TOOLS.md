@@ -52,7 +52,7 @@ warnings: [{ key, reason, superseded_by }]
 
 ### `search_recipes(specs)`
 
-Find recipes in the corpus. Takes an array of search **specs** and returns one result group per spec, in one round-trip. Each spec applies its `facets` as the hard gate over the caller's available corpus (whole shared corpus + the caller's personal recipes − the caller's rejects); a spec's optional `vibe` picks the mode. **Without a vibe (membership):** returns every survivor, unranked, **including not-yet-embedded recipes**, uncapped by `k` — the named-dish / browse path. **With a vibe (ranked):** embeds the vibe and ranks the embedded survivors by cosine, re-ranked by taste and freshness; unembedded survivors are dropped and the top-`k` returned. Backend-agnostic ranking: the middle leg is a brute-force cosine over a D1 `recipe_derived` join today; a future Vectorize swap is invisible to the caller. Reads the index (`src/recipe-index.ts`); ranked specs additionally read the embeddings (`recipe_derived`), the caller's overlay / cooking log / preferences, and the alias table. An empty table returns empty result groups; an unreadable table returns `index_unavailable`.
+Find recipes in the corpus. Takes an array of search **specs** and returns one result group per spec, in one round-trip. Each spec applies its `facets` as the hard gate over the caller's available corpus — the household's **lens-visible** corpus minus the caller's rejects (the visibility note below); a spec's optional `vibe` picks the mode. **Without a vibe (membership):** returns every survivor, unranked, **including not-yet-embedded recipes**, uncapped by `k` — the named-dish / browse path. **With a vibe (ranked):** embeds the vibe and ranks the embedded survivors by cosine, re-ranked by taste and freshness; unembedded survivors are dropped and the top-`k` returned. Backend-agnostic ranking: the middle leg is a brute-force cosine over a D1 `recipe_derived` join today; a future Vectorize swap is invisible to the caller. Reads the index (`src/recipe-index.ts`); ranked specs additionally read the embeddings (`recipe_derived`), the caller's overlay / cooking log / preferences, and the alias table. An empty table returns empty result groups; an unreadable table returns `index_unavailable`.
 
 **Params:**
 - `specs` (array, required, ≥1): each `{ label, facets?, vibe?, k?, boost_ingredients? }`:
@@ -68,7 +68,8 @@ Find recipes in the corpus. Takes an array of search **specs** and returns one r
   - **Ranked rows** (vibe present): `{ slug, title, description, protein, cuisine, time_total, score, similarity, pantry_overlap }`. `similarity` is the raw query↔recipe cosine; `score` is the blended rank (cosine + favorite + freshness + pantry overlap), rounded to 4 dp. `pantry_overlap` is the subset of that spec's `boost_ingredients` this recipe uses (normalized) — `[]` when none matched or none were passed.
 
 **Notes:**
-- **Opt-out visibility — no status filter.** A recipe with no overlay row is neutral/available; the default result for an unfiltered membership spec is the **whole shared corpus minus the caller's rejects**. There is no `status` filter and no per-member active set; a rejected recipe (`toggle_reject`) is excluded entirely (a hard gate) in both modes.
+- **The visibility lens gates membership in both modes.** The available corpus is the caller's household's **lens-visible** set, resolved through the one shared enforcement point (`src/visibility.ts` over the `recipe_imports` grant relation): a recipe is visible when the caller's household imported it, a friend household imported it, or it carries a **curated** grant (suppressible household-wide via the `curated_hide` preference). Under the **self-hosted** deployment profile the lens is implicit all-to-all — every household's non-curated imports are visible, i.e. the full attached corpus. Ranked mode gates candidates on the same lens **before** cosine, so rank can never admit an out-of-lens recipe.
+- **Opt-out visibility within the lens — no status filter.** A visible recipe with no overlay row is neutral/available; the default result for an unfiltered membership spec is the **lens-visible corpus minus the caller's rejects**. There is no `status` filter and no per-member active set; a rejected recipe (`toggle_reject`) is excluded entirely (a hard gate) in both modes.
 - **Makeability gate (default-on):** joins the caller's kitchen `owned` and drops recipes whose `requires_equipment` is not a subset of `owned`. An **empty/absent** `owned` (unknown inventory) makes the gate a **no-op** (everything passes). `include_unmakeable: true` disables the drop and instead returns those recipes annotated with `missing_equipment` — use it when surfacing a specifically **named** dish so it's flagged, never silently dropped.
 - Array filters (`dietary`, `season`) match **all** listed values (AND/narrowing). **There is no `tags` filter** — keyword/tag matching is done by `query`.
 - `course` (string): the **open-vocabulary** dish-type facet (`main | side | dessert | breakfast | component | …` — `component` is a sub-recipe/building block like a dough or stock), matched by **containment** — `course: "side"` returns every recipe whose `course` array includes `side`, including a dual-use `[main, side]` dish. Matched literally against the normalized index (no controlled set). One vibe-less faceted spec returns mains and sides together (each entry's `frontmatter` carries `course`); the caller buckets by `course`. `search_recipes` applies **no default course gate** — it is an explicit-query tool, so a caller asking for sides/sauces/components keeps getting them (the default main-course gate belongs to the suggestion surfaces: `propose_meal_plan`'s pools and the app's picked-for-you/trending rows).
@@ -90,6 +91,8 @@ Read a single recipe's full content (frontmatter + body).
 **Returns:**
 - `{ slug, frontmatter, body }` — `frontmatter` includes the objective shared fields, among them `perishable_ingredients` (a normalized list of the recipe's perishable ingredients; empty when absent), `course` (the open-vocabulary dish-type array — `main | side | dessert | breakfast | component | …`; empty when absent), and `pairs_with` (slugs of suggested corpus sides), plus the AI-generated `description` (merged from the derived `recipe_derived` store; absent until the reconcile first generates it). The `perishable_ingredients` and `course` fields also ride each entry's `frontmatter` from the index-backed `search_recipes`, so the menu-gen waste callout and the mains/sides faceting reason over them without any extra tool.
 
+**Notes:** The read is **lens-gated**: a slug outside the caller's visibility lens returns the same structured `not_found` a nonexistent slug does — byte-identical, resolved before any body read — so the tool is never a slug-probing oracle.
+
 ### `display_recipe(slug)`
 
 Render a recipe as an **inline, branded card** in the conversation — the bespoke in-chat widget (`ui://recipe/card`). Call it when the member wants to **SEE** a recipe; call `read_recipe` instead when you only need to read a recipe to reason over it (meal planning), so an internal read never forces a card render. Reuses `read_recipe`'s reader over the shared corpus + the caller's overlay. It is also the conversation's **guided-cook surface** (D32): the card carries a **Start Cooking** mode (mise-en-place check-off, step-by-step navigation, per-step timers) whose steps come from the `cook` block when a skill supplies one, else from a client-side parse of the recipe body, plus **favorite** and **log-cooked** controls the widget **writes** back through the app bridge.
@@ -100,16 +103,23 @@ Render a recipe as an **inline, branded card** in the conversation — the bespo
 **Returns:**
 - A **widget-bearing** result: `_meta.ui.resourceUri` is `ui://recipe/card` (the MCP Apps resource the host mounts as an iframe), `structuredContent` carries the recipe's display fields (title, facets, `time_total`/`dietary`, the caller's `favorite` overlay, the markdown `body`, `contract_version`, and the optional `cook` block — the `RecipeCardData` shape in [`SCHEMAS.md`](SCHEMAS.md)), and `content` is a plain-text rendering of the same card, the fallback for a host that cannot render the widget.
 
-**Notes:** An unknown slug returns a structured `not_found` (nothing rendered). The `ui://recipe/card` resource is served over MCP `resources/read`, not a Worker HTTP route. A **writing widget** (D18): a favorite tap calls `toggle_favorite` and mirrors state to the host model (`ui/update-model-context`, no message); a log-cooked calls `log_cooked` and mirrors state plus a `ui/message`; cook completion sends a `ui/message` only — the writes never route through the model, and a failed (`isError`) write is never announced as done. The widget re-hydrates `favorite` via `read_recipe` at boot before enabling writes, and degrades to a read-only card on an unknown-newer `contract_version` (D19). Tool/skill boundary: this tool owns *how* a recipe renders inline and cooks; the skill (`cook`) owns *when* to show one — call `display_recipe` to display or guide cooking a recipe, `read_recipe` to reason over one.
+**Notes:** An unknown slug — or a slug outside the caller's visibility lens, indistinguishably (the same lens gate as `read_recipe`) — returns a structured `not_found` (nothing rendered). The `ui://recipe/card` resource is served over MCP `resources/read`, not a Worker HTTP route. A **writing widget** (D18): a favorite tap calls `toggle_favorite` and mirrors state to the host model (`ui/update-model-context`, no message); a log-cooked calls `log_cooked` and mirrors state plus a `ui/message`; cook completion sends a `ui/message` only — the writes never route through the model, and a failed (`isError`) write is never announced as done. The widget re-hydrates `favorite` via `read_recipe` at boot before enabling writes, and degrades to a read-only card on an unknown-newer `contract_version` (D19). Tool/skill boundary: this tool owns *how* a recipe renders inline and cooks; the skill (`cook`) owns *when* to show one — call `display_recipe` to display or guide cooking a recipe, `read_recipe` to reason over one.
 
-### `recipe_site_url()`
+### `recipe_site_url(slug?)`
 
-Resolve the URL of the hosted cookbook (the static browse view of the shared corpus), served by the **yamp Worker itself** at `<host>/cookbook` — built from the D1 index + the R2 corpus (`src/cookbook.ts`), no GitHub Pages and no GitHub App token. No parameters; never writes. Used in onboarding to point a member at the full corpus.
+Resolve a hosted cookbook URL, **lens-aware**. With no arguments: the cookbook root (the browse view served by the **yamp Worker itself** at `<host>/cookbook`, built from the D1 index + the R2 corpus, `src/cookbook.ts`). With a `slug`: a link appropriate to that recipe's visibility. Never writes. Used in onboarding to point a member at the collection, and to share a recipe link.
+
+**Params:**
+- `slug` (string, optional) — a recipe slug to link.
 
 **Returns:**
-- `{ url, enabled }` — `enabled: true` with `<host>/cookbook` (the operator's domain the member connected to) when the host is resolvable; `{ url: null, enabled: false }` on the rare path where it isn't.
+- No `slug`: `{ url, enabled }` — `enabled: true` with `<host>/cookbook` (the operator's domain the member connected to) when the host is resolvable; `{ url: null, enabled: false }` on the rare path where it isn't.
+- With `slug`, one of:
+  - `{ url: "<host>/cookbook/<slug>", enabled: true, scope: "public" }` — the recipe is **anonymously visible** (inside the public site's lens position), so the link works for anyone;
+  - `{ url: "<host>/recipe/<slug>", enabled: true, scope: "member" }` — the recipe is inside the **caller's** lens but not anonymously visible; the member-app detail link, which requires a member session;
+  - a structured `not_found` — the slug is unknown **or outside the caller's lens**, indistinguishably (no slug-probing oracle; visibility resolves before any body read).
 
-**Notes:** No GitHub Pages, no GitHub Pro, no permission grant — it cannot return `insufficient_permission`. On the `enabled: false` path the cookbook just couldn't be addressed; surface the corpus another way (e.g. `search_recipes`) rather than pointing at a URL.
+**Notes:** Share a `scope: "public"` link freely; a `scope: "member"` link is for the caller's household (it 404s for an anonymous visitor). The anonymous site carries the full attached corpus under the self-hosted deployment profile and the curated tier only under SaaS. No permission grant is involved — the tool cannot return `insufficient_permission`. On the `enabled: false` path the cookbook just couldn't be addressed; surface the corpus another way (e.g. `search_recipes`) rather than pointing at a URL.
 
 ### `read_reconcile_errors()`
 
@@ -192,7 +202,7 @@ Hide a recipe from the **caller** — `reject: true` removes it from the caller'
 
 ### `create_recipe(frontmatter, body, slug?)`
 
-Write a **new** recipe to the **shared corpus** (read by everyone), from agent-assembled frontmatter + body, as **one R2 object**. The slug derives from the title's **dish name** — any parenthetical gloss is excluded from the slug basis ("Jatjuk (Pine Nut Porridge)" → `jatjuk`, with the gloss kept in the `title`; a title that is *only* a parenthetical falls back to the full-title basis) — unless `slug` is supplied. The body MUST contain `## Ingredients` and `## Instructions` H2 sections (guarded — a body missing them is rejected, never written). A recipe is shared and single-source: if the `source` URL is already in the corpus, the write is refused (`already_exists`) so the existing recipe is reused, not duplicated.
+Write a **new** recipe to the **shared corpus** (one canonical copy, read by every household whose lens includes it), from agent-assembled frontmatter + body, as **one R2 object**. The slug derives from the title's **dish name** — any parenthetical gloss is excluded from the slug basis ("Jatjuk (Pine Nut Porridge)" → `jatjuk`, with the gloss kept in the `title`; a title that is *only* a parenthetical falls back to the full-title basis) — unless `slug` is supplied. The body MUST contain `## Ingredients` and `## Instructions` H2 sections (guarded — a body missing them is rejected, never written). A recipe is single-source, and a duplicate `source` URL is **dedup-to-grant**: no second copy is written — the caller's household gains a visibility grant on the existing recipe (it lands in their cookbook) and the tool returns `already_exists` with the existing slug to reuse. A fresh create records the caller household's `recipe_imports` grant (`via 'agent'`, the resolved member) beside the R2 put, so every import path captures attribution at creation.
 
 **Params:**
 - `frontmatter` (object, required) — recipe frontmatter. The **descriptive facets are derived on the cron** (`recipe-facet-derivation`), so you author only the gates + identity: **required** `title`; `source` (URL or `null`); `time_total` (number or `null`); `dietary` and `requires_equipment` (the two **hard gates** — author them; may be `[]`); `pairs_with` (may be `[]`). You **may** supply `protein`/`cuisine`/`course`/`season`/`tags` as an optional authored **override** (vocab-validated; wins over the classifier; `tags` is unioned) but needn't — the classify pass and the import seed fill them. `ingredients_key`/`perishable_ingredients`/`side_search_terms`/`meal_preppable` are derived (a supplied value is only a legacy fallback). Other fields are free-form. **No `status`** is stamped — an imported recipe lands available to the group by default. Discovery imports should set `discovered_at`/`discovery_source`. `description` is **not** an input — it is AI-generated and stored in D1 (`recipe_derived`).
@@ -204,10 +214,10 @@ Write a **new** recipe to the **shared corpus** (read by everyone), from agent-a
 
 **Errors (structured):**
 - `{ error: "slug_exists", slug }` — a recipe already exists at that path; not overwritten.
-- `{ error: "already_exists", slug, source }` — a recipe with this `source` URL is already in the shared corpus (idempotent import); `slug` is the existing recipe to reuse.
+- `{ error: "already_exists", slug, source }` — a recipe with this `source` URL is already in the shared corpus (idempotent import); the caller household's visibility grant is minted before the error returns (idempotent when one already exists), and `slug` is the existing recipe to reuse — already in the household's cookbook.
 - `{ error: "validation_failed" }` — no derivable slug (missing title), the body lacks the required H2 sections, or the frontmatter violates the contract (a missing required **authored** field — `title`/`source`/`time_total`/`dietary`/`requires_equipment`/`pairs_with` — an off-vocabulary `requires_equipment` slug, an off-vocab `protein`/`cuisine`/`season` **override**, or a `"none"` protein — the error names the offending field).
 
-**Notes:** The everyday discovery write path: `parse_recipe` (parse) → agent cleans/classifies → `create_recipe`. The recipe is available to everyone the moment it's written (no draft, no activation); later personal disposition is `toggle_favorite` (love it) or `toggle_reject` (hide it). The frontmatter is a pass-through record (free-form fields ride through), but the required-field contract is enforced at write time (`src/validate.ts`, the shared `validateRecipeContract` the build also runs) so a recipe can never be created silently un-indexed. `protein`/`cuisine`/`requires_equipment` are checked against the shared vocabularies (`src/vocab.js`); a no-protein dish writes `protein: null` (never omitted, never `none`). `update_recipe` enforces the same contract on the **merged** result — a one-field patch on a compliant recipe succeeds, an edit that empties a required field is rejected — and is the path to backfill fields on existing recipes. `perishable_ingredients` **and `ingredients_key`** are **normalized on write** (Kroger-matcher normalization) so cross-recipe overlap lines up; classify `perishable_ingredients` by the "would the leftover rot" test.
+**Notes:** The everyday discovery write path: `parse_recipe` (parse) → agent cleans/classifies → `create_recipe`. The recipe is available the moment it's written (no draft, no activation) — in the importing household's cookbook, and to every household whose visibility lens includes it (the whole deployment under the self-hosted profile); later personal disposition is `toggle_favorite` (love it) or `toggle_reject` (hide it). The frontmatter is a pass-through record (free-form fields ride through), but the required-field contract is enforced at write time (`src/validate.ts`, the shared `validateRecipeContract` the build also runs) so a recipe can never be created silently un-indexed. `protein`/`cuisine`/`requires_equipment` are checked against the shared vocabularies (`src/vocab.js`); a no-protein dish writes `protein: null` (never omitted, never `none`). `update_recipe` enforces the same contract on the **merged** result — a one-field patch on a compliant recipe succeeds, an edit that empties a required field is rejected — and is the path to backfill fields on existing recipes. `perishable_ingredients` **and `ingredients_key`** are **normalized on write** (Kroger-matcher normalization) so cross-recipe overlap lines up; classify `perishable_ingredients` by the "would the leftover rot" test.
 
 ---
 
@@ -215,28 +225,30 @@ Write a **new** recipe to the **shared corpus** (read by everyone), from agent-a
 
 Notes are the **spin-capture mechanism**: a tweak or observation is an *attributed note*, never an edit to shared recipe content. The canonical recipe stays canonical; "sub gochujang, cut the sugar" lives as a note. This is what makes a shared corpus safe — only a genuine "different dish" warrants a personal-recipe fork. Notes are stored in the D1 `recipe_notes` table (attributed by `author` column), so authorship is structural, not a spoofable field.
 
-### `add_recipe_note(slug, body, tags?, private?)`
+### `add_recipe_note(slug, body, tags?, tier?, private?)`
 
-Append an attributed note to a recipe (shared or personal) in the caller's notes. **Append-mostly** — prior notes are retained, never overwritten; shared content is never touched.
+Append an attributed note to a recipe (shared or personal) in the caller's notes. **Append-mostly** — prior notes are retained, never overwritten; shared content is never touched. **Lens-gated**: only recipes inside the caller's visibility lens are writable — an out-of-lens slug returns the identical `not_found` a nonexistent slug does.
 
 **Params:**
 - `slug` (string, required) — the recipe the note is about.
 - `body` (string, required) — free-form markdown (the tweak/observation).
 - `tags` (array of strings, optional) — e.g. `["tweak"]`, `["observation"]`.
-- `private` (boolean, optional) — default `false` (shared with the group). A `private` note is visible only to its author.
+- `tier` (`"public" | "friends" | "private"`, optional) — the note's visibility tier, default **`friends`**. `friends` = the author's household plus its friend households (everyone on a self-hosted deployment); `private` = the authoring member only; `public` = anyone who can see the recipe, including the anonymous `/cookbook` site where (and only where) the recipe itself is anonymously visible.
+- `private` (boolean, optional, **deprecated**) — the pre-tier alias, kept for stale plugin bundles: `true` → `tier: "private"`, `false` → `tier: "friends"`. `tier` wins when both are passed.
 
 **Returns:**
-- `{ slug, author, created_at }` — D1-backed, no `commit_sha`
+- `{ slug, author, created_at, tier }` — D1-backed, no `commit_sha`
 
 **Errors (structured):**
 - `{ error: "validation_failed" }` — malformed slug or empty body.
+- `{ error: "not_found" }` — slug outside the caller's lens (or nonexistent — indistinguishable).
 
-### `update_recipe_note(slug, created_at, body?, tags?, private?)`
+### `update_recipe_note(slug, created_at, body?, tags?, tier?, private?)`
 
-Edit one of the caller's **own** notes, addressed by its `created_at` (from `add_recipe_note` / `read_recipe_notes`). Only the fields passed change; `created_at` is the immutable key. **Self-scoped** — it can only touch a note the caller authored. Shared recipe content and other tenants' notes are untouched. (Relaxes the append-only posture for your own notes.)
+Edit one of the caller's **own** notes, addressed by its `created_at` (from `add_recipe_note` / `read_recipe_notes`). Only the fields passed change; `created_at` is the immutable key. Passing `tier` **re-tiers** the note — this is the tier-change surface (no separate op), and visibility is a live lens: the change applies on the very next read. The deprecated `private` alias maps as on `add_recipe_note`. **Self-scoped** — it can only touch a note the caller authored, so it stays writable even for a recipe that has left the caller's lens (an author can always privatize or fix their own note). Shared recipe content and other members' notes are untouched.
 
 **Returns:**
-- `{ slug, author, created_at }` — D1-backed, no `commit_sha`
+- `{ slug, author, created_at, tier }` — D1-backed, no `commit_sha`
 
 **Errors (structured):**
 - `{ error: "validation_failed" }` — malformed slug or empty body.
@@ -254,7 +266,7 @@ Delete one of the caller's **own** notes, addressed by its `created_at`. Self-sc
 
 ### `read_recipe_notes(slug)`
 
-Read the **group's** notes and favorites for a recipe — the collaborative-cookbook view. Aggregated across everyone in the group at read time (the tenant directory → each member's subtree).
+Read the notes and favorites for a recipe — the collaborative-cookbook view. Notes follow the **visibility tiers**; favorites aggregate at read time across the households inside the caller's visibility lens (every household under the self-hosted profile; the caller's own plus friend households under SaaS).
 
 **Params:**
 - `slug` (string, required)
@@ -263,12 +275,12 @@ Read the **group's** notes and favorites for a recipe — the collaborative-cook
 ```
 {
   slug,
-  notes:     [{ author, created_at, body, tags, private }], // ordered by timestamp
-  favorites: [{ author }]                                   // one per member who favorited it
+  notes:     [{ author, handle, created_at, body, tags, tier, private }], // ordered by timestamp
+  favorites: [{ author }]                                                 // one per member who favorited it
 }
 ```
 
-**Notes:** The caller sees their **own** private notes plus **everyone's shared** notes; another member's `private` note is never returned. `favorites` is the group signal — `favorites.length` is the favorite count. Surface it ("favorited by two others") before recommending a recipe the caller hasn't tried.
+**Notes:** The read is **lens-gated**: a recipe outside the caller's lens returns the identical structured `not_found` a nonexistent slug does — notes are unreachable for a recipe the caller can't see. Within a visible recipe the tier rules decide per note: the caller's **own** notes at every tier; **`friends`** notes whose author's household is the caller's own or a friend household (everyone under self-hosted — the pre-tier shared behavior); **`public`** notes from **any** household, even one outside the caller's lens (e.g. a public note on a curated recipe). Another member's `private` note is never returned. Visibility is a **live lens**: a new or severed friendship, or a re-tiered note, changes the very next read — nothing is materialized. `handle` is the author's display handle (joined from the members registry; the author id doubles as the founding handle). `private` is **deprecated** — derived (`tier === "private"`), kept one band for stale readers; key off `tier`. `favorites` is the group signal — `favorites.length` is the favorite count. Surface it ("favorited by two others") before recommending a recipe the caller hasn't tried.
 
 ---
 
@@ -420,7 +432,7 @@ The **planning window** (`preferences.planning_cadence_days`, days; defaults to 
   - `diagnostics`: `{ seed, lambda, nights, filled, empty, rolled_over, meals, attendance }` — `rolled_over` are due vibes that didn't fit this week (debt keeps climbing); `meals` is the per-meal `{ requested, filled, empty }` map; `nights` stays for one deprecation window as the alias of `meals.dinner.requested`; `attendance` is `{ effective, ignored, notes? }` (always present — the effective eating set and the dropped unknown handles).
   - `notes` (string[], present when non-empty): the empty-meal escape nudges.
 
-**Notes:** An empty palette (no vibes of ANY meal) **and** no `ephemeral_vibes` set returns an empty `plan` with a `note` to add vibes (or pass an ephemeral set) first — an ephemeral set drives a proposal even on an empty palette. Determinism holds across **every** param: identical request bodies (with request-time vectors served from the query-embedding cache) produce identical responses — pins and nudges are inputs, and the seed fully determines the week given the inputs; this is what makes the stateless iteration loop (and the member app's client-side session replay) work. The tool never writes — persist an agreed plan with `update_meal_plan`, threading each slot's **`meal`** and its chosen main's `vibe_id` as the row's `from_vibe` so cooking it advances that vibe's cadence (`satisfied_vibe`); an ephemeral-authored week's slot ids are synthetic (no palette vibe), so there cook-time cosine attribution advances the palette instead of `from_vibe`. Sides are **corpus-only** (rung-1 `pairs_with`); open-world sides and freeform-text queries are the calling surface's job, so the tool never fabricates a side. Holistic use-it-up is **always-on** (derived from the pantry) — the caller doesn't need to pass `boost_ingredients` to get it; matching is keyword + alias set-membership over `perishable_ingredients`/`ingredients_key` (no vectors).
+**Notes:** Every candidate pool draws from the caller's **lens-visible** corpus (the same visibility lens as `search_recipes`, applied before retrieval), so a proposal — mains, sides, alternates, locks, and pins alike — can never surface an out-of-lens recipe. An empty palette (no vibes of ANY meal) **and** no `ephemeral_vibes` set returns an empty `plan` with a `note` to add vibes (or pass an ephemeral set) first — an ephemeral set drives a proposal even on an empty palette. Determinism holds across **every** param: identical request bodies (with request-time vectors served from the query-embedding cache) produce identical responses — pins and nudges are inputs, and the seed fully determines the week given the inputs; this is what makes the stateless iteration loop (and the member app's client-side session replay) work. The tool never writes — persist an agreed plan with `update_meal_plan`, threading each slot's **`meal`** and its chosen main's `vibe_id` as the row's `from_vibe` so cooking it advances that vibe's cadence (`satisfied_vibe`); an ephemeral-authored week's slot ids are synthetic (no palette vibe), so there cook-time cosine attribution advances the palette instead of `from_vibe`. Sides are **corpus-only** (rung-1 `pairs_with`); open-world sides and freeform-text queries are the calling surface's job, so the tool never fabricates a side. Holistic use-it-up is **always-on** (derived from the pantry) — the caller doesn't need to pass `boost_ingredients` to get it; matching is keyword + alias set-membership over `perishable_ingredients`/`ingredients_key` (no vectors).
 
 ---
 
@@ -838,12 +850,12 @@ Unprompted discovery is **autonomous**: a background **discovery sweep** (a sche
 
 ### `list_new_for_me()`
 
-Return the recipes the **background discovery sweep imported for the caller** since their last meal plan — the discovery surface the meal-plan flow reads. Each row is **already classified and embedded**, so it is immediately usable *and* retrievable via `search_recipes`. Scoped to the caller: recipes the sweep **matched to the caller's taste** (a `discovery_matches` row for this tenant), discovered after their `last_planned_at` watermark, with **no overlay disposition** (not favorited/rejected) and **not yet cooked**. Read-only; per-tenant.
+Return the recipes the **background discovery sweep imported for the caller** since their last meal plan — the discovery surface the meal-plan flow reads. Each row is **already classified and embedded**, so it is immediately usable *and* retrievable via `search_recipes`. Scoped to the calling **member**: recipes the sweep **matched to the caller's taste** (a `discovery_matches` row whose `member` is the caller — attribution is per-member, while recipe visibility is per-household), discovered after their `last_planned_at` watermark, with **no overlay disposition** (not favorited/rejected) and **not yet cooked**. Read-only.
 
 **Returns:**
 - `{ recipes: [{ slug, title, description, protein, cuisine, time_total, discovered_at }] }` — most-recent-first, bounded. `description` is the AI-generated "why this dish."
 
-**Notes:** The watermark is the **later** of the caller's `last_planned_at` (the D1 `profile` planning watermark, stamped by `update_meal_plan` on an `add`) and a fixed **~21-day floor**, so a never-planned member sees at most a recent window of discoveries, not the whole backlog. An **empty list is normal** (nothing new since they last planned). Fold these into the menu *before* the rest of retrieval. This is the discovery surface the meal-plan flow reads — the agent reads ready-made results; it does not fetch/score/import in-flow.
+**Notes:** The watermark is the **later** of the caller's `last_planned_at` (the D1 `profile` planning watermark, stamped by `update_meal_plan` on an `add`) and a fixed **~21-day floor**, so a never-planned member sees at most a recent window of discoveries, not the whole backlog. An **empty list is normal** (nothing new since they last planned). Only taste **matches** appear: curated-tier landings write no match rows, and a bare visibility grant (a recipe entering the lens without being matched to this member) is never surfaced here — the row set is lens-visible by construction (the household's own sweep imports carry its grant). Fold these into the menu *before* the rest of retrieval. This is the discovery surface the meal-plan flow reads — the agent reads ready-made results; it does not fetch/score/import in-flow.
 
 ### `read_discovery_errors()`
 
@@ -945,6 +957,11 @@ Read the caller's full per-tenant profile, assembled from the D1 profile tables 
                                      //   effective cadence.dinner — prefer `cadence`. The
                                      //   retired lunch_strategy / ready_to_eat_default_action
                                      //   never appear (meal vibes supersede them).
+                                     //   `curated_hide` appears as `true` only when the
+                                     //   household hides the curated recipe tier from its
+                                     //   visibility lens; absent otherwise (shown is the
+                                     //   default). Household-scoped; set via
+                                     //   update_preferences.
   taste:           string | null,    // taste-profile narrative (markdown)
   diet_principles: string | null,    // diet-principles narrative (markdown)
   kitchen:         { owned: [...], notes: {...} },  // equipment inventory (empty when absent)
@@ -957,17 +974,29 @@ Read the caller's full per-tenant profile, assembled from the D1 profile tables 
                                      //   when absent (also joins `missing` under the unchanged
                                      //   "vibes" label). The revealed-preference rhythm read at
                                      //   session start — a prior for shaping a plan, not a cage.
+  household: {                       // the caller's household roster (social-graph)
+    members: [{
+      handle:    string,             //   the member's @handle (the stable key for
+                                     //   "away"/"only" attendance and chat references)
+      nickname:  string | null,      //   the CALLING member's own alias for them — see
+                                     //   the privacy guarantee below; null when unset
+      you:       boolean,            //   marks the calling member's own row
+      joined_at: number              //   epoch ms the member row was created
+    }]
+  }
 }
 ```
 
 **Notes:** The single call for session start, meal-plan pre-pass, and configure-yamp-profile. On `initialized: false`, run the `configure-yamp-profile` flow first; use `missing` to skip areas already done. D1-backed (assembled from the per-tenant profile tables) — a missing profile returns all fields null/empty. Kitchen `owned` is the array of `EQUIPMENT_VOCAB` slugs that **gate** recipe makeability; an **absent/empty** `owned` makes the gate a no-op (everything shows).
+
+**Household + nickname privacy (guaranteed):** `household.members` lists every member of the caller's household, and `nickname` carries ONLY the calling member's own per-viewer alias (set on the member app's People page; `null` when unset). The tool **never** returns a nickname set *by* anyone else or *for* the caller — aliases are private to the viewer who set them, and no member surface or export discloses an alias to its subject or to a third member. Handles are the stable keys: resolve chat references ("Mom and Grandma are coming to town") through this block, and pass `handle` values to attendance (`away`/`only`).
 
 ### `update_preferences(patch)` / `update_taste(content)` / `update_diet_principles(content)` / `update_aliases(aliases)`
 
 Write user-curated config. `update_taste`/`update_diet_principles` are content-faithful (write the supplied full markdown to the D1 `profile` row, no `commit_sha`). `update_aliases` **upserts** variant→canonical-id ingredient mappings into the shared **ingredient identity graph** (`ingredient_alias` + `ingredient_identity`, where the matcher's resolver reads them) as **human** edits (`source='human'`, which the auto capture cron never overwrites), keyed by lowercased variant — add/edit, no removal (`{ updated }`, no `commit_sha`). The cron grows the same store automatically, so a manual alias is rarely needed — reserve it for a synonym the cron hasn't bridged. The same tool also curates node **display labels**: an optional `display_names` map (canonical id → human label) writes each as a `source='human'` `display_name` on the identity node — the curated label read surfaces render, distinct from the id (the join key) and `search_term` (the Kroger phrase), and never downgraded by the auto cron. **`update_preferences` is a deep merge-patch**, not a whole-object write. **These should only be called when the user explicitly directs an edit.**
 
 **Params:**
-- `update_preferences`: `patch` (object, required) — a **JSON Merge Patch (RFC 7396)** over the caller's preferences. Present values set, nested objects merge recursively, arrays replace wholesale, and `null` deletes. The defined keys are `cadence`, `planning_cadence_days`, `weekly_budget`, `stores`, `brands`, `dietary`, `rotation`, and `custom`; an unknown top-level key is rejected with `validation_failed` and a hint to place open-ended data under `custom`. `stores` supports `{primary, preferred_location, location_zip, nicknames:{[store_slug]: string|null}}`; nicknames are household-private presentation and never write the shared `stores` row. A family in `brands` is `{tiers:string[][], any_brand:boolean}`; family `null` deletes it, and partial nested patches preserve omitted fields. The merged result is validated before a single atomic D1 apply; malformed enums/shapes return `malformed_data` and store nothing. During the compatibility window, flat brand arrays, `default_cooking_nights`, and retired meal-strategy keys follow the conversion/drop warning contract in the deprecation table above.
+- `update_preferences`: `patch` (object, required) — a **JSON Merge Patch (RFC 7396)** over the caller's preferences. Present values set, nested objects merge recursively, arrays replace wholesale, and `null` deletes. The defined keys are `cadence`, `planning_cadence_days`, `weekly_budget`, `stores`, `brands`, `dietary`, `rotation`, `curated_hide`, and `custom`; an unknown top-level key is rejected with `validation_failed` and a hint to place open-ended data under `custom`. `curated_hide` is a boolean: `true` suppresses the **curated recipe tier** (the product-maintained starter set, SaaS profile) from the household's visibility lens — household-scoped (it applies to every member) and reversible (`false`/`null` restores the tier; nothing is deleted); it never affects the anonymous public site, and it is inert under the self-hosted profile (no curated tier grants visibility there). `stores` supports `{primary, preferred_location, location_zip, nicknames:{[store_slug]: string|null}}`; nicknames are household-private presentation and never write the shared `stores` row. A family in `brands` is `{tiers:string[][], any_brand:boolean}`; family `null` deletes it, and partial nested patches preserve omitted fields. The merged result is validated before a single atomic D1 apply; malformed enums/shapes return `malformed_data` and store nothing. During the compatibility window, flat brand arrays, `default_cooking_nights`, and retired meal-strategy keys follow the conversion/drop warning contract in the deprecation table above.
 - `update_taste` / `update_diet_principles`: `content` (string, required) — the complete new field text
 - `update_aliases`: `aliases` (object, required) — a map of variant → canonical id, e.g. `{ "EVOO": "olive oil" }`; each is upserted by lowercased variant as a human edit
 - `update_aliases`: `display_names` (object, optional) — a map of **canonical id → human label**, e.g. `{ "cabbage::color-red": "Red cabbage" }`; each is written onto the identity node as a human `display_name` (`source='human'`)

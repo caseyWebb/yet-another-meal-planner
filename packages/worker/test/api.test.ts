@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { ToolError } from "../src/errors.js";
 import app from "../src/api/app.js";
+import { fakeD1 } from "./fake-d1.js";
 import type { Env } from "../src/env.js";
 
 // A test-only route through the REAL mount's error boundary (basePath /api applies).
@@ -43,7 +44,17 @@ function apiEnv(overrides: Partial<Env> = {}) {
     TENANT_KV: tenantKv,
     KROGER_KV: memKv(),
     DB: {
-      prepare: () => ({ bind: () => ({ first: async () => null, run: async () => ({ meta: { changes: 0 } }) }) }),
+      // Bound and bind-less statements both resolve empty (the whoami profile read is
+      // bind-less: NULL operator_config → the self-hosted default).
+      prepare: () => {
+        const stmt = {
+          bind: () => stmt,
+          first: async () => null,
+          all: async () => ({ results: [], success: true, meta: { changes: 0 } }),
+          run: async () => ({ meta: { changes: 0 } }),
+        };
+        return stmt;
+      },
     },
     TOOL_AE: { writeDataPoint: (p: never) => points.push(p) },
     ...overrides,
@@ -78,7 +89,7 @@ describe("POST /api/session (login)", () => {
     const { env } = apiEnv();
     const res = await login(env, "GOODCODE");
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ tenant: { id: "casey" } });
+    expect(await res.json()).toEqual({ tenant: { id: "casey", member: "casey" } });
     const cookie = res.headers.get("set-cookie") ?? "";
     expect(cookie).toContain("__Host-session=");
     expect(cookie).toContain("HttpOnly");
@@ -107,6 +118,20 @@ describe("POST /api/session (login)", () => {
     expect(bodies[2]).toEqual(bodies[0]);
     expect(bodies[0]).toEqual({ error: "unauthorized", message: "That invite code didn't work" });
     expect(unknown.headers.get("set-cookie")).toBeNull();
+  });
+
+  it("answers a MEMBER-revoked code with the same uniform 401 (liveness at login)", async () => {
+    // The tenant stays allowlisted but holds only ANOTHER member's row, so the code's
+    // founding member fails the liveness check and the lazy guard cannot re-mint it.
+    const fake = fakeD1({
+      tables: { members: [{ id: "m2", tenant: "casey", handle: "pat", created_at: 1 }], tenant_activity: [] },
+    });
+    const { env } = apiEnv({ DB: (fake.env as { DB: unknown }).DB } as Partial<Env>);
+    const res = await login(env, "GOODCODE");
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: "unauthorized", message: "That invite code didn't work" });
+    expect(res.headers.get("set-cookie")).toBeNull();
+    expect(fake.tables.members).toHaveLength(1); // no resurrection
   });
 
   it("rate-limits the 11th attempt from one IP within the window (429)", async () => {
@@ -169,7 +194,7 @@ describe("GET /api/session (whoami) + ETag", () => {
     expect(res.status).toBe(200);
     // Unset deployment vars degrade to explicit nulls — never a fabricated slug/name.
     expect(await res.json()).toEqual({
-      tenant: { id: "casey" },
+      tenant: { id: "casey", member: "casey" },
       profile: "self-hosted",
       operator: { name: null, repo: null },
     });

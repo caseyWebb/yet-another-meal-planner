@@ -1,8 +1,10 @@
 // Recipe detail (member-app-core 7.4, D14): overlay-merged frontmatter + derived
 // description, the Cook-with-Claude deep link (no model call in the app — anything
 // conversational deep-links out), add-to-plan / log-as-cooked / favorite actions,
-// the markdown body, the notes section (own editable incl. private; other members'
-// shared notes read-only), and Similar recipes — the design bundle's detail page.
+// the markdown body, the notes section (own editable at every visibility tier;
+// other members' tier-admitted notes read-only, handle-attributed — the composer's
+// Public/Friends/Private segmented control is design request #9), and Similar
+// recipes — the design bundle's detail page.
 import * as React from "react";
 import { Link, createFileRoute, useLoaderData } from "@tanstack/react-router";
 import {
@@ -15,14 +17,17 @@ import {
   IconCheck,
   IconClock,
   IconEdit,
+  IconGlobe,
   IconHeart,
   IconHeartFill,
+  IconLock,
   IconPlus,
   IconSearch,
   IconSparkles,
   IconTrash,
   Input,
   RecipeFacets,
+  SegmentedControl,
   Textarea,
   parseCookBody,
   toast,
@@ -34,6 +39,7 @@ import {
   useRecipe,
   useSimilar,
   type NoteRow,
+  type NoteTier,
 } from "../lib/data";
 import {
   useLogAdd,
@@ -197,7 +203,11 @@ function RecipeDetailPage() {
             {/* Escape-first markdown render (lib/md.ts) — authored corpus text, no raw HTML. */}
             <div className="prose" data-testid="recipe-body" dangerouslySetInnerHTML={{ __html: mdToHtml(recipe.data.body) }} />
 
-            <NotesSection slug={slug} notes={notes.data?.notes ?? []} />
+            <NotesSection
+              slug={slug}
+              notes={notes.data?.notes ?? []}
+              anonymouslyVisible={notes.data?.anonymously_visible === true}
+            />
 
             {similar.data && similar.data.similar.length > 0 ? (
               <section className="similar" data-testid="similar-recipes">
@@ -212,17 +222,51 @@ function RecipeDetailPage() {
   );
 }
 
-// --- notes (D14: own editable incl. private; community read-only) ----------------
+// --- notes (D14 + note-visibility-tiers: own editable at every tier; community
+// tier-admitted read-only, handle-attributed) --------------------------------------
 
-function NotesSection({ slug, notes }: { slug: string; notes: NoteRow[] }) {
+const NOTE_TIERS: readonly NoteTier[] = ["public", "friends", "private"];
+
+/** The one-line audience description under the composer's tier control (design
+ *  request #9). Public copy is conditional on the recipe's anonymous visibility. */
+function tierDescription(tier: NoteTier, anonymouslyVisible: boolean): string {
+  if (tier === "friends") return "Your household and friends can see this";
+  if (tier === "private") return "Only you";
+  return anonymouslyVisible
+    ? "Anyone who can see this recipe — including the public cookbook site if this recipe is public"
+    : "Visible to everyone who can see this recipe — it isn't on the public site, so this note won't be either";
+}
+
+/** The tier indicator on a rendered note: lock = Private, globe = Public; Friends
+ *  renders unmarked (the default carries no chrome). */
+function TierBadge({ tier }: { tier: NoteTier }) {
+  if (tier === "friends") return null;
+  return (
+    <span className="note-tier-badge" data-testid="note-tier-badge" data-tier={tier}>
+      {tier === "private" ? <IconLock /> : <IconGlobe />} {tier}
+    </span>
+  );
+}
+
+function NotesSection({
+  slug,
+  notes,
+  anonymouslyVisible,
+}: {
+  slug: string;
+  notes: NoteRow[];
+  anonymouslyVisible: boolean;
+}) {
   const noteAdd = useNoteAdd();
-  const session = useSessionTenant();
-  const mine = notes.filter((n) => n.author === session);
-  const community = notes.filter((n) => n.author !== session && !n.private);
+  const member = useSessionMember();
+  // Own vs community keys on the server-stamped author (the resolved member id) —
+  // the server already tier-filters what arrives, so no client-side privacy filter.
+  const mine = notes.filter((n) => n.author === member);
+  const community = notes.filter((n) => n.author !== member);
 
   const [body, setBody] = React.useState("");
   const [tag, setTag] = React.useState("");
-  const [priv, setPriv] = React.useState(false);
+  const [tier, setTier] = React.useState<NoteTier>("friends");
 
   function addNote(e: React.FormEvent) {
     e.preventDefault();
@@ -233,12 +277,12 @@ function NotesSection({ slug, notes }: { slug: string; notes: NoteRow[] }) {
       slug,
       body: body.trim(),
       tags: tag.trim() ? [tag.trim()] : [],
-      private: priv,
+      tier,
       created_at: new Date().toISOString(),
     });
     setBody("");
     setTag("");
-    setPriv(false);
+    setTier("friends");
   }
 
   return (
@@ -253,6 +297,12 @@ function NotesSection({ slug, notes }: { slug: string; notes: NoteRow[] }) {
           value={body}
           onChange={(e) => setBody(e.target.value)}
         />
+        <div className="note-tier" data-testid="note-tier">
+          <SegmentedControl name="note-tier" value={tier} options={NOTE_TIERS} onChange={setTier} />
+          <p className="note-tier-desc" data-testid="note-tier-desc">
+            {tierDescription(tier, anonymouslyVisible)}
+          </p>
+        </div>
         <div className="note-form-row">
           <Input
             className="note-tag-input"
@@ -262,9 +312,6 @@ function NotesSection({ slug, notes }: { slug: string; notes: NoteRow[] }) {
             value={tag}
             onChange={(e) => setTag(e.target.value)}
           />
-          <label className="note-priv">
-            <input type="checkbox" checked={priv} onChange={(e) => setPriv(e.target.checked)} /> Private
-          </label>
           <Button type="submit" size="sm" disabled={!body.trim()}>
             <IconPlus /> Add note
           </Button>
@@ -273,7 +320,7 @@ function NotesSection({ slug, notes }: { slug: string; notes: NoteRow[] }) {
       {mine.length ? (
         <ul className="notelist mine" data-testid="own-notes">
           {mine.map((n) => (
-            <OwnNote key={n.created_at} slug={slug} note={n} />
+            <OwnNote key={n.created_at} slug={slug} note={n} anonymouslyVisible={anonymouslyVisible} />
           ))}
         </ul>
       ) : (
@@ -293,14 +340,31 @@ function NotesSection({ slug, notes }: { slug: string; notes: NoteRow[] }) {
   );
 }
 
-function OwnNote({ slug, note }: { slug: string; note: NoteRow }) {
+function OwnNote({
+  slug,
+  note,
+  anonymouslyVisible,
+}: {
+  slug: string;
+  note: NoteRow;
+  anonymouslyVisible: boolean;
+}) {
   const noteEdit = useNoteEdit();
   const noteRemove = useNoteRemove();
   const [editing, setEditing] = React.useState(false);
   const [draft, setDraft] = React.useState(note.body);
+  // The edit state's tier control, seeded with the note's current tier (design
+  // request #9) — the PATCH sends tier alongside body on the same class (b) write.
+  const [draftTier, setDraftTier] = React.useState<NoteTier>(note.tier);
+
+  function beginEdit() {
+    setDraft(note.body);
+    setDraftTier(note.tier);
+    setEditing(true);
+  }
 
   function save() {
-    noteEdit.mutate({ slug, created_at: note.created_at, body: draft.trim() });
+    noteEdit.mutate({ slug, created_at: note.created_at, body: draft.trim(), tier: draftTier });
     setEditing(false);
   }
 
@@ -311,16 +375,16 @@ function OwnNote({ slug, note }: { slug: string; note: NoteRow }) {
   return (
     <li className="note" data-testid="own-note">
       <span className="note-avatar you" aria-hidden="true">
-        {note.author.charAt(0).toUpperCase()}
+        {note.handle.charAt(0).toUpperCase()}
       </span>
       <div className="note-main">
         <div className="note-head">
           <span className="note-author">you</span>
           {note.tags[0] ? <span className="note-tag">{note.tags[0]}</span> : null}
-          {note.private ? <span className="note-priv-badge">private</span> : null}
+          <TierBadge tier={note.tier} />
           <span className="note-time">{relAge(note.created_at)}</span>
           <span className="note-actions">
-            <button type="button" className="icon-btn" title="Edit" data-testid="note-edit" onClick={() => setEditing(true)}>
+            <button type="button" className="icon-btn" title="Edit" data-testid="note-edit" onClick={beginEdit}>
               <IconEdit />
             </button>
             <button type="button" className="icon-btn" title="Delete" data-testid="note-delete" onClick={remove}>
@@ -329,8 +393,12 @@ function OwnNote({ slug, note }: { slug: string; note: NoteRow }) {
           </span>
         </div>
         {editing ? (
-          <div className="note-edit">
+          <div className="note-edit" data-testid="note-edit-form">
             <Textarea className="textarea" value={draft} onChange={(e) => setDraft(e.target.value)} />
+            <div className="note-tier" data-testid="note-edit-tier">
+              <SegmentedControl name="note-edit-tier" value={draftTier} options={NOTE_TIERS} onChange={setDraftTier} />
+              <p className="note-tier-desc">{tierDescription(draftTier, anonymouslyVisible)}</p>
+            </div>
             <div className="note-edit-actions">
               <Button size="sm" onClick={save} disabled={!draft.trim()}>
                 Save
@@ -352,12 +420,15 @@ function CommunityNote({ note }: { note: NoteRow }) {
   return (
     <li className="note" data-testid="community-note">
       <span className="note-avatar" aria-hidden="true">
-        {note.author.charAt(0).toUpperCase()}
+        {note.handle.charAt(0).toUpperCase()}
       </span>
       <div className="note-main">
         <div className="note-head">
-          <span className="note-author">{note.author}</span>
+          <span className="note-author" data-testid="note-handle">
+            @{note.handle}
+          </span>
           {note.tags[0] ? <span className="note-tag">{note.tags[0]}</span> : null}
+          <TierBadge tier={note.tier} />
           <span className="note-time">{relAge(note.created_at)}</span>
         </div>
         <p className="note-body">{note.body}</p>
@@ -366,8 +437,9 @@ function CommunityNote({ note }: { note: NoteRow }) {
   );
 }
 
-/** The signed-in tenant id, from the shell route's whoami loader data. */
-function useSessionTenant(): string {
-  const data = useLoaderData({ from: "/_app" }) as { tenant: { id: string } };
-  return data.tenant.id;
+/** The signed-in member id, from the shell route's whoami loader data — the notes
+ *  own/community split keys on it (authors are member ids). */
+function useSessionMember(): string {
+  const data = useLoaderData({ from: "/_app" }) as { tenant: { id: string; member: string } };
+  return data.tenant.member;
 }

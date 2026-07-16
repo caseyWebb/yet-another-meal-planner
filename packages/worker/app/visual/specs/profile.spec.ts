@@ -90,6 +90,15 @@ test("the preferences tab offers no retired lunch-strategy / ready-to-eat contro
   await expect(profilePage.pageText("Ready-to-eat items")).toHaveCount(0);
 });
 
+test("no Curated-collection card renders under the self-hosted profile", async ({ profilePage }) => {
+  // The SaaS-only card (deployment-profiles-and-visibility-lens design request #10) is
+  // gated by whoami's `profile` — this server is the never-written self-hosted default,
+  // so the card is ABSENT (its SaaS render is covered in cookbook-saas.spec.ts).
+  await profilePage.openTab("prefs");
+  await expect(profilePage.prefsTab()).toBeVisible();
+  await expect(profilePage.curatedCard()).toHaveCount(0);
+});
+
 test("the Store card exposes four honest adapter tabs from one projection", async ({ profilePage }) => {
   const adapters = SEED.app.storeAdapters;
   await profilePage.openTab("prefs");

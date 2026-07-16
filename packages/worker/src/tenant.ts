@@ -1,23 +1,30 @@
 // Multi-tenancy foundation (multi-tenancy capability). A `Tenant` is the
-// per-request identity context every tool closes over. All per-tenant state lives in
-// D1 keyed by tenant id; the shared authored corpus lives in R2 (one bucket every
-// tenant reads/writes through the corpus store). There is no GitHub data repo on the
-// data path — identity is just the tenant id.
+// per-request identity context every tool closes over: the tenant id (the isolation
+// boundary) plus the acting member id (attribution within it). All per-tenant state
+// lives in D1 keyed by tenant id; the shared authored corpus lives in R2 (one bucket
+// every tenant reads/writes through the corpus store). There is no GitHub data repo
+// on the data path — identity is the `(tenant, member)` pair.
 //
 // The tenant DIRECTORY is the operator-curated allowlist of usernames, in KV, so
 // it is operational mapping, never domain data (D9). The OAuth provider (Section 3)
-// validates the access token and hands the MCP handler a `tenantId` via grant
-// `props`; `resolveTenant` then re-checks that id against the allowlist and builds
-// the `Tenant`. The identity STEP is an operator-issued **invite code** (D2):
-// `resolveInvite` maps a code to an allowlisted username at the authorize step.
+// validates the access token and hands the MCP handler a `(tenantId, memberId)` pair
+// via grant `props`; `resolveIdentity` re-checks the tenant against the allowlist,
+// checks the member for liveness against the D1 `members` table, and builds the
+// `Tenant`. The tenant is the ISOLATION boundary; the member is attribution within
+// it (member-identity-split). The identity STEP is an operator-issued **invite
+// code** (D2): `resolveInvite` maps a code to an allowlisted `(tenant, member)` pair.
 
 import type { Env } from "./env.js";
 import { db } from "./db.js";
+import { getMember, countMembers, insertFoundingMember } from "./members-db.js";
 
-/** The per-request tenant context. Assembled by `resolveTenant`. */
+/** The per-request identity context. Assembled by `resolveIdentity`. */
 export interface Tenant {
   /** Opaque operator-assigned username, e.g. "alice". Allowlist key + Kroger key + D1 tenant column. */
   id: string;
+  /** The acting member within the tenant — attribution, never isolation. A founding
+   *  member's id equals the tenant id, so every pre-split credential resolves here. */
+  member: string;
 }
 
 /** Structured rejection returned when a bearer token resolves to no tenant. */
@@ -102,9 +109,11 @@ export function directoryFromEnv(env: Env): TenantStore {
   return kvTenantStore(env.TENANT_KV);
 }
 
-/** Build the full per-request `Tenant` from a directory record. */
-export function tenantFromRecord(_env: Env, record: TenantRecord): Tenant {
-  return { id: normalizeTenantId(record.id) };
+/** Build the full per-request `Tenant` from a directory record. `member` defaults to the
+ *  founding member (the legacy-defaulting rule: absent member dimension ⇒ `member = tenant`). */
+export function tenantFromRecord(_env: Env, record: TenantRecord, member?: string): Tenant {
+  const id = normalizeTenantId(record.id);
+  return { id, member: member ?? id };
 }
 
 // How stale `last_seen_at` must be before a resolution re-writes it (admin-ui-redesign-members).
@@ -156,18 +165,37 @@ export async function touchTenantActivity(env: Env, tenantId: string, nowMs = Da
 }
 
 /**
- * Resolve a provider-validated `tenantId` (from grant `props`) to its `Tenant`,
- * re-checking it against the allowlist. Returns a structured `unauthorized` when
- * the id is missing or absent from the directory. No tool runs until this succeeds.
+ * The ONE shared identity resolver: resolve a credential's `(tenantId, memberId)` pair to
+ * its `Tenant`, used by the MCP handler (grant props), the `/api` session middleware
+ * (session records), passkey login (credential rows), and invite-code login — so
+ * revocation semantics are identical on every surface. Steps:
+ *
+ *   1. Canonicalize + allowlist re-check, exactly as tenant resolution always has.
+ *   2. Legacy defaulting: a credential minted before the member-identity split carries no
+ *      member dimension — an absent `memberId` resolves to the founding member
+ *      (`memberId = tenantId`), uniformly across grants, sessions, invites, approvals.
+ *   3. Member liveness: the `(id, tenant)` row must exist in `members` — this is how
+ *      member-revoke kills grants/sessions/passkeys without touching the OAuth store.
+ *   4. The lazy founding-member convergence guard: when the member row is missing AND
+ *      `memberId === tenantId` AND the tenant has ZERO member rows, mint the founding
+ *      member and proceed — healing any tenant the migration seed missed (the seed reads
+ *      the D1 `tenants` registry, which can trail the KV allowlist). Both conditions are
+ *      load-bearing: minting only at zero rows means a revoked founding member of a
+ *      multi-member household can never be resurrected by an old token, and minting only
+ *      the founding id means no other id can be conjured.
+ *
+ * Any other missing member row is a structured `unauthorized`. No tool or route runs
+ * until this succeeds.
  *
  * `recordSeen` (default false) fires the best-effort, throttled `tenant_activity` touch —
- * pass `true` only from the MCP request path (`src/index.ts`), NOT from operator-driven
- * resolutions (the admin Kroger-consent mint, the Data explorer's member lookup), which
- * resolve a tenant without that tenant actually being active.
+ * pass `true` only from member request paths (`src/index.ts`, `requireSession`, passkey
+ * login), NOT from operator-driven resolutions (the admin Kroger-consent mint, the Data
+ * explorer's member lookup), which resolve a tenant without that tenant being active.
  */
-export async function resolveTenant(
+export async function resolveIdentity(
   env: Env,
   tenantId: string | null | undefined,
+  memberId: string | null | undefined,
   directory: TenantStore,
   recordSeen = false,
 ): Promise<Tenant | Unauthorized> {
@@ -182,11 +210,34 @@ export async function resolveTenant(
   if (!record) {
     return { error: "unauthorized", message: `Username ${id} is not on the allowlist` };
   }
+  const member = memberId || id; // the legacy-defaulting rule (step 2)
+  if (!(await getMember(db(env), member, id))) {
+    if (member === id && (await countMembers(db(env), id)) === 0) {
+      // The convergence guard (step 4): a pre-split tenant's first post-split request.
+      await insertFoundingMember(db(env), id, Date.now());
+    } else {
+      return { error: "unauthorized", message: `Member ${member} is not part of ${id}` };
+    }
+  }
   if (recordSeen) {
-    // Fire-and-forget: never let the activity touch delay or fail tenant resolution.
+    // Fire-and-forget: never let the activity touch delay or fail identity resolution.
     void touchTenantActivity(env, id);
   }
-  return tenantFromRecord(env, record);
+  return tenantFromRecord(env, record, member);
+}
+
+/**
+ * Resolve a bare `tenantId` (no member dimension presented) — `resolveIdentity` under
+ * the legacy-defaulting rule, yielding the founding member. Kept for the operator-driven
+ * call sites that address a tenant, not a member (the admin Kroger-consent mint).
+ */
+export async function resolveTenant(
+  env: Env,
+  tenantId: string | null | undefined,
+  directory: TenantStore,
+  recordSeen = false,
+): Promise<Tenant | Unauthorized> {
+  return resolveIdentity(env, tenantId, undefined, directory, recordSeen);
 }
 
 /**
@@ -199,28 +250,41 @@ export async function resolveTenant(
  */
 export type InviteKind = "bootstrap" | "legacy";
 
-/** A resolved, allowlist-checked invite: the canonical tenant id plus its record kind. */
+/** A decoded `invite:<code>` value (no allowlist re-check yet). `member` is absent on
+ *  records minted before the member-identity split (and on every legacy bare-string
+ *  record) — the legacy-defaulting rule resolves those to the founding member. */
+export interface ParsedInvite {
+  tenant: string;
+  member?: string;
+  kind: InviteKind;
+}
+
+/** A resolved, allowlist-checked invite: the canonical `(tenant, member)` pair plus its
+ *  record kind. `member` is always present — defaulted to the founding member when the
+ *  stored record predates the split. */
 export interface ResolvedInvite {
   tenant: string;
+  member: string;
   kind: InviteKind;
 }
 
 /**
  * Parse a stored `invite:<code>` value WITHOUT an allowlist re-check. A bootstrap record is
- * JSON `{ tenant, single_use, expires_at }` (minted by `onboard`/`rotate` with a KV TTL); a
- * legacy record is the bare canonical username. Returns null for an unparseable/empty value.
- * The single place the on-disk invite format is decoded — `resolveInvite` and the admin
- * `deleteInvitesFor` scan both go through here.
+ * JSON `{ tenant, member, single_use, expires_at }` (minted by `onboard`/`rotate` with a KV
+ * TTL; `member` absent on pre-split records); a legacy record is the bare canonical
+ * username. Returns null for an unparseable/empty value. The single place the on-disk
+ * invite format is decoded — `resolveInvite` and the admin invite scans all go through here.
  */
-export function parseInviteRecord(raw: string | null): ResolvedInvite | null {
+export function parseInviteRecord(raw: string | null): ParsedInvite | null {
   if (raw == null) return null;
   const s = raw.trim();
   if (!s) return null;
   if (s.startsWith("{")) {
     try {
-      const parsed = JSON.parse(s) as { tenant?: unknown };
+      const parsed = JSON.parse(s) as { tenant?: unknown; member?: unknown };
       if (typeof parsed.tenant !== "string" || !parsed.tenant) return null;
-      return { tenant: parsed.tenant, kind: "bootstrap" };
+      const member = typeof parsed.member === "string" && parsed.member ? parsed.member : undefined;
+      return { tenant: parsed.tenant, member, kind: "bootstrap" };
     } catch {
       return null;
     }
@@ -230,18 +294,20 @@ export function parseInviteRecord(raw: string | null): ResolvedInvite | null {
 
 /**
  * The invite-code identity step: map an operator-issued invite code to its allowlisted
- * username and record kind. Returns null when the code is unknown/expired (KV) or maps to a
- * username no longer on the allowlist. `get` re-checks the allowlist and returns the canonical
- * (lowercase) id, so the tenant set from this is already normalized. Acceptance under the grace
- * control is the CALLER's decision (see `inviteAccepted`) so unknown/expired/grace-rejected all
- * collapse to one uniform `unauthorized` at the surface (no oracle).
+ * `(tenant, member)` pair and record kind. Returns null when the code is unknown/expired
+ * (KV) or maps to a username no longer on the allowlist. `get` re-checks the allowlist and
+ * returns the canonical (lowercase) id, so the tenant set from this is already normalized;
+ * a record without a member dimension resolves to the founding member (the uniform
+ * legacy-defaulting rule). Acceptance under the grace control is the CALLER's decision
+ * (see `inviteAccepted`) so unknown/expired/grace-rejected all collapse to one uniform
+ * `unauthorized` at the surface (no oracle).
  */
 export async function resolveInvite(kv: KVNamespace, code: string): Promise<ResolvedInvite | null> {
   if (!code) return null;
   const parsed = parseInviteRecord(await kv.get(`${INVITE_PREFIX}${code}`));
   if (!parsed) return null;
   const record = await kvTenantStore(kv).get(parsed.tenant);
-  return record ? { tenant: record.id, kind: parsed.kind } : null;
+  return record ? { tenant: record.id, member: parsed.member ?? record.id, kind: parsed.kind } : null;
 }
 
 /**

@@ -219,6 +219,8 @@ ul.recipes > li:last-child { border-bottom: 0; }
 .note-tag-input { width: 11rem; height: 2rem; }
 .note-priv { display: inline-flex; align-items: center; gap: 0.4rem; font-size: var(--text-sm); color: var(--muted-foreground); }
 .note-priv input { width: 1rem; height: 1rem; }
+.note-tier { display: flex; flex-direction: column; gap: 0.35rem; }
+.note-tier-desc { margin: 0; font-size: var(--text-xs); color: var(--muted-foreground); }
 .notelist { list-style: none; margin: 1.1rem 0 0; padding: 0; display: flex; flex-direction: column; gap: 1.1rem; }
 .note { display: grid; grid-template-columns: auto 1fr; gap: 0.75rem; }
 .note-avatar { width: 1.85rem; height: 1.85rem; flex: 0 0 auto; border-radius: 9999px; display: flex; align-items: center; justify-content: center; background: var(--muted); color: var(--muted-foreground); font-size: var(--text-xs); font-weight: 600; text-transform: uppercase; }
@@ -227,7 +229,8 @@ ul.recipes > li:last-child { border-bottom: 0; }
 .note-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
 .note-author { font-size: var(--text-sm); font-weight: 500; }
 .note-tag { display: inline-flex; align-items: center; height: 1.2rem; padding: 0 0.45rem; border-radius: 2rem; border: 1px solid color-mix(in oklch, var(--primary) 40%, var(--border)); background: color-mix(in oklch, var(--primary) 10%, transparent); color: var(--brand); font-size: 0.68rem; font-weight: 500; }
-.note-priv-badge { font-size: 0.65rem; color: var(--muted-foreground); border: 1px solid var(--border); border-radius: 2rem; padding: 0 0.4rem; height: 1.2rem; display: inline-flex; align-items: center; }
+.note-tier-badge { font-size: 0.65rem; color: var(--muted-foreground); border: 1px solid var(--border); border-radius: 2rem; padding: 0 0.4rem; height: 1.2rem; display: inline-flex; align-items: center; gap: 0.25rem; }
+.note-tier-badge svg { width: 0.7rem; height: 0.7rem; }
 .note-time { font-size: var(--text-xs); color: var(--muted-foreground); }
 .note-actions { margin-left: auto; display: inline-flex; gap: 0.15rem; }
 .note-body { margin-top: 0.2rem; font-size: var(--text-sm); line-height: 1.55; color: color-mix(in oklch, var(--foreground) 88%, transparent); }

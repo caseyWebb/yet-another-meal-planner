@@ -24,7 +24,10 @@ import { directoryFromEnv } from "./tenant.js";
 import { readFeeds, readDiscoveryInbox, readDiscoveryRejections } from "./corpus-db.js";
 import { readIngestCandidates, deleteIngestCandidate, pruneIngestPushes } from "./ingest-db.js";
 import { recipeSourceMap, loadRecipeEmbeddings } from "./recipe-index.js";
-import { extractRecipeSources, canonicalizeUrl, buildNewRecipe } from "./discovery.js";
+import { extractRecipeSources, canonicalizeUrl, buildNewRecipe, indexSourceToSlug } from "./discovery.js";
+import { loadDeploymentProfile } from "./deployment.js";
+import { loadDeploymentConfig } from "./operator-config.js";
+import { recordImportGrant, CURATED_TENANT, CURATED_VIA } from "./visibility.js";
 import { parseFeed } from "./feeds.js";
 import { fetchWithBrowserHeaders, readTextCapped } from "./http.js";
 import { acquireRecipeContent, type AcquireReason } from "./recipe-acquire.js";
@@ -71,6 +74,14 @@ export interface SweepCandidate {
   pushed?: boolean;
   /** For a pushed candidate, the batch `source` name (provenance shown in the admin views). */
   origin?: string | null;
+  /** The `recipe_imports.via` value an import of this candidate stamps on its grants:
+   *  `feed:<feed url>` (feed/email intake), `satellite` (pushed), or `curated`. Absent
+   *  (a legacy/retry row with no resolvable origin) falls back to `agent`. */
+  via?: string;
+  /** True for a CURATED-source candidate (SaaS only): skips taste matching and member
+   *  attribution entirely — no `discovery_matches` rows — and its import lands one grant
+   *  on the reserved curated tenant instead (deps.grantCurated). */
+  curated?: boolean;
 }
 
 /** One member's taste signal for the matcher (vectors resolved by the deps). */
@@ -190,8 +201,17 @@ export interface LogEntry {
   origin?: string | null;
 }
 
-/** Per-member attribution to persist on an import. */
+/** Per-member attribution to persist on an import. `member` is the matched member the
+ *  match row AND the household grant stamp — the founding member (= tenant id) until
+ *  taste splits by member (per-member taste vectors remain tenant-keyed today). */
 export interface Attribution {
+  tenant: string;
+  member: string;
+  score: number;
+}
+
+/** One member's computed cosine for the log detail (every member, pass or fail). */
+export interface MatchScore {
   tenant: string;
   score: number;
 }
@@ -237,8 +257,13 @@ export interface DiscoveryDeps {
   confirmMatches(title: string, description: string, members: SweepMember[]): Promise<string[]>;
   /** Import: assemble body + frontmatter, validate, write to the corpus, return the slug. */
   importRecipe(frontmatter: Record<string, unknown>, content: RecipeContent, descVector: number[]): Promise<string>;
-  /** Persist per-member attribution for an imported recipe. */
-  recordMatches(slug: string, attributions: Attribution[]): Promise<void>;
+  /** Persist per-member attribution AND the matched households' visibility grants for an
+   *  imported recipe, in ONE batch (`via` = the candidate's import origin) — the single
+   *  write path that keeps attribution and visibility from drifting (D13). */
+  recordMatches(slug: string, attributions: Attribution[], via: string): Promise<void>;
+  /** Record the reserved curated tenant's grant on a slug (curated intake: no taste
+   *  matching, no `discovery_matches` rows — one `via='curated'` grant). Idempotent. */
+  grantCurated(slug: string): Promise<void>;
   /** Append one outcome row to the discovery log (INSERT). Opts carry retry state for retryable parks. */
   recordLog(entry: LogEntry, opts?: { attempts?: number; nextRetryAt?: string | null }): Promise<void>;
   /** Update an existing row in place when a retry resolves (success or exhaustion terminalize). */
@@ -299,9 +324,9 @@ export function matchMembers(
   candidateDietary: string[],
   members: SweepMember[],
   config: DiscoveryConfig,
-): { matches: Attribution[]; gatedByDiet: boolean; scores: Attribution[] } {
+): { matches: Attribution[]; gatedByDiet: boolean; scores: MatchScore[] } {
   const matches: Attribution[] = [];
-  const scores: Attribution[] = [];
+  const scores: MatchScore[] = [];
   let gatedByDiet = false;
   for (const m of members) {
     const score = bestTasteCosine(vec, m);
@@ -314,7 +339,10 @@ export function matchMembers(
       gatedByDiet = true;
       continue;
     }
-    matches.push({ tenant: m.tenant, score: rounded });
+    // Match attribution stamps the FOUNDING member (= tenant id): per-member taste
+    // vectors remain tenant-keyed today, so the matched "member" is the household's
+    // founding member until a later change splits taste by member.
+    matches.push({ tenant: m.tenant, member: m.tenant, score: rounded });
   }
   return { matches, gatedByDiet: gatedByDiet && matches.length === 0, scores };
 }
@@ -536,8 +564,10 @@ export async function processCandidate(
   };
 
   try {
-    // [1] cheap triage — skip for retry candidates (already evaluated before).
-    if (triageVec !== null) {
+    // [1] cheap triage — skip for retry candidates (already evaluated before) and for
+    // CURATED candidates (the curated tier deliberately skips taste matching: it is the
+    // deployment's cold-start floor, not a per-member match).
+    if (triageVec !== null && !candidate.curated) {
       if (!nearAnyMember(triageVec, members, config.triageThreshold)) {
         await logSuccess({ ...logBase(candidate), outcome: "no_match", detail: { stage: "triage" } });
         return { outcome: "no_match", didFetch: false, didClassify: false };
@@ -569,41 +599,51 @@ export async function processCandidate(
     const descVec = await deps.embed(description);
 
     // [5] dedup — same dish already in the corpus (L2) or imported earlier this tick (L3).
+    // A CURATED duplicate is dedup-to-grant: the existing recipe gains the curated
+    // tenant's grant beside any household grants (distinct tenants, both rows live).
     const dupSlug =
       findDuplicate(descVec, corpus, config.dedupThreshold) ??
       findDuplicate(descVec, importedVectors, config.dedupThreshold);
     if (dupSlug) {
+      if (candidate.curated) await deps.grantCurated(dupSlug);
       await logSuccess({ ...logBase(candidate), outcome: "duplicate", detail: { duplicate_of: dupSlug } });
       return { outcome: "duplicate", didFetch: true, didClassify: true };
     }
 
     // [6] match (cosine + repel + dietary gate), then the negation-aware LLM confirm.
-    const { matches, gatedByDiet, scores } = matchMembers(
-      descVec,
-      asStringArray(frontmatter.dietary),
-      members,
-      config,
-    );
-    if (matches.length === 0) {
-      const outcome: Outcome = gatedByDiet ? "dietary_gated" : "no_match";
-      // Carry the per-member cosine scores computed at this stage so a halted candidate is
-      // auditable — how close each member came, not only pass/fail (discovery-sweep spec).
-      await logSuccess({ ...logBase(candidate), outcome, detail: { stage: "match", match_scores: scores } });
-      return { outcome, didFetch: true, didClassify: true };
-    }
-    const matchMembersList = members.filter((m) => matches.some((a) => a.tenant === m.tenant));
-    const confirmed = new Set(await deps.confirmMatches(candidate.title, description, matchMembersList));
-    const attributions = matches.filter((a) => confirmed.has(a.tenant));
-    if (attributions.length === 0) {
-      await logSuccess({
-        ...logBase(candidate),
-        outcome: "no_match",
-        detail: { stage: "confirm", match_scores: scores },
-      });
-      return { outcome: "no_match", didFetch: true, didClassify: true };
+    // CURATED candidates skip matching entirely: no member attribution, no
+    // `discovery_matches` rows (so curated landings can never flood "Just Added").
+    let attributions: Attribution[] = [];
+    if (!candidate.curated) {
+      const { matches, gatedByDiet, scores } = matchMembers(
+        descVec,
+        asStringArray(frontmatter.dietary),
+        members,
+        config,
+      );
+      if (matches.length === 0) {
+        const outcome: Outcome = gatedByDiet ? "dietary_gated" : "no_match";
+        // Carry the per-member cosine scores computed at this stage so a halted candidate is
+        // auditable — how close each member came, not only pass/fail (discovery-sweep spec).
+        await logSuccess({ ...logBase(candidate), outcome, detail: { stage: "match", match_scores: scores } });
+        return { outcome, didFetch: true, didClassify: true };
+      }
+      const matchMembersList = members.filter((m) => matches.some((a) => a.tenant === m.tenant));
+      const confirmed = new Set(await deps.confirmMatches(candidate.title, description, matchMembersList));
+      attributions = matches.filter((a) => confirmed.has(a.tenant));
+      if (attributions.length === 0) {
+        await logSuccess({
+          ...logBase(candidate),
+          outcome: "no_match",
+          detail: { stage: "confirm", match_scores: scores },
+        });
+        return { outcome: "no_match", didFetch: true, didClassify: true };
+      }
     }
 
-    // [7] import — assemble + validate + write; attribute; log; seed the L3 vector.
+    // [7] import — assemble + validate + write; attribute + grant (one write path); log;
+    // seed the L3 vector. A curated import lands the reserved tenant's grant instead of
+    // household attribution, so no import path leaves a recipe unattached.
     let slug: string;
     try {
       slug = await deps.importRecipe(frontmatter, content, descVec);
@@ -612,7 +652,11 @@ export async function processCandidate(
       await logSuccess({ ...logBase(candidate), outcome: "error", detail: { reason: `import: ${message}` } });
       return { outcome: "error", didFetch: true, didClassify: true };
     }
-    await deps.recordMatches(slug, attributions);
+    if (candidate.curated) {
+      await deps.grantCurated(slug);
+    } else {
+      await deps.recordMatches(slug, attributions, candidate.via ?? "agent");
+    }
     await logSuccess({ ...logBase(candidate), outcome: "imported", slug, detail: { attribution: attributions } });
     importedVectors.push({ slug, vector: descVec });
     return { outcome: "imported", didFetch: true, didClassify: true };
@@ -826,24 +870,27 @@ export function buildDiscoveryDeps(env: Env, now: () => number = () => Date.now(
   return {
     async loadCandidates() {
       const feeds = await readFeeds(env);
-      const [sourceMap, rejected, evaluated, inbox, settled] = await Promise.all([
+      const [sourceMap, rejected, evaluated, inbox, settled, profile, deployment] = await Promise.all([
         recipeSourceMap(env),
         readDiscoveryRejections(env),
         loadEvaluatedUrls(env),
         readDiscoveryInbox(env),
         loadSettledUrls(env),
+        loadDeploymentProfile(env),
+        loadDeploymentConfig(env),
       ]);
       const seen = extractRecipeSources(sourceMap);
+      const rejectedSet = new Set<string>(rejected);
       for (const u of rejected) seen.add(u);
       for (const u of evaluated) seen.add(canonicalizeUrl(u));
 
       const out: SweepCandidate[] = [];
       const local = new Set<string>();
-      const push = (rawUrl: string, title: string, summary: string | null, source: string): boolean => {
+      const push = (rawUrl: string, title: string, summary: string | null, source: string, via: string): boolean => {
         const url = canonicalizeUrl(rawUrl);
         if (!url || seen.has(url) || local.has(url)) return false;
         local.add(url);
-        out.push({ url, title, summary, source });
+        out.push({ url, title, summary, source, via });
         return true;
       };
 
@@ -852,7 +899,19 @@ export function buildDiscoveryDeps(env: Env, now: () => number = () => Date.now(
       // add-only feed set can grow without the feed fan-out exceeding the shared external-subrequest
       // budget (#54). feedFetchMaxPerTick is a const guardrail (not operator-tunable), so it is read
       // from DEFAULT_CONFIG directly rather than threaded through the deps.
-      const sortedFeeds = feeds.filter((f) => f.url).sort((a, b) => a.url.localeCompare(b.url));
+      //
+      // Curated source (SaaS only — under self-hosted it is NOT polled at all): the
+      // deployment's `curated_source_url` joins the SAME rotation as one more feed, so
+      // curated intake rides the existing per-tick rotation/volume bounds and can never
+      // starve member feeds. Its candidates are provenance-tagged `curated`: they skip
+      // taste matching, and an item whose URL is already a corpus recipe is
+      // DEDUP-TO-GRANT — the curated tenant's grant lands on the existing slug here,
+      // with no pipeline pass at all.
+      const curatedUrl = profile === "saas" ? deployment.curatedSourceUrl : null;
+      const srcToSlug = curatedUrl ? indexSourceToSlug(sourceMap) : null;
+      type FeedEntry = { url: string; name?: string | null; curated?: boolean };
+      const sortedFeeds: FeedEntry[] = feeds.filter((f) => f.url).sort((a, b) => a.url.localeCompare(b.url));
+      if (curatedUrl) sortedFeeds.push({ url: curatedUrl, name: "curated", curated: true });
       const cursor = Number.parseInt((await env.KROGER_KV.get(FEED_CURSOR_KEY)) ?? "", 10);
       const { batch, nextCursor } = selectFeedBatch(
         sortedFeeds,
@@ -865,7 +924,34 @@ export function buildDiscoveryDeps(env: Env, now: () => number = () => Date.now(
             const res = await fetchWithBrowserHeaders(f.url);
             if (!res.ok) return;
             for (const item of parseFeed(await readTextCapped(res)).slice(0, MAX_PER_FEED)) {
-              push(item.link, item.title, item.summary ?? null, f.name ?? f.url);
+              if (f.curated) {
+                const url = canonicalizeUrl(item.link);
+                if (!url || local.has(url) || rejectedSet.has(url)) continue;
+                const existing = srcToSlug?.get(url);
+                if (existing) {
+                  // Already in the corpus → the curated grant, not a candidate (idempotent).
+                  await recordImportGrant(env, {
+                    recipe: existing,
+                    tenant: CURATED_TENANT,
+                    member: CURATED_TENANT,
+                    via: CURATED_VIA,
+                    importedAt: today(),
+                  });
+                  continue;
+                }
+                if (seen.has(url)) continue; // already evaluated/rejected — ordinary dedup
+                local.add(url);
+                out.push({
+                  url,
+                  title: item.title,
+                  summary: item.summary ?? null,
+                  source: "curated",
+                  via: CURATED_VIA,
+                  curated: true,
+                });
+              } else {
+                push(item.link, item.title, item.summary ?? null, f.name ?? f.url, `feed:${f.url}`);
+              }
             }
           } catch {
             // a dead/blocked/over-cap feed is skipped this sweep (re-polled on a later rotation)
@@ -887,7 +973,7 @@ export function buildDiscoveryDeps(env: Env, now: () => number = () => Date.now(
         for (const m of body.match(URL_RE) ?? []) {
           if (promoted >= MAX_PER_EMAIL) break;
           if (isLikelyNonRecipeLink(m)) continue;
-          if (push(m, subject, null, sender)) promoted++;
+          if (push(m, subject, null, sender, `feed:${sender}`)) promoted++;
         }
       }
 
@@ -917,6 +1003,7 @@ export function buildDiscoveryDeps(env: Env, now: () => number = () => Date.now(
           source: c.origin,
           pushed: true,
           origin: c.origin,
+          via: "satellite",
           content: { title: c.title, ingredients: c.content.ingredients, instructions: c.content.instructions },
         });
       }
@@ -1026,8 +1113,18 @@ export function buildDiscoveryDeps(env: Env, now: () => number = () => Date.now(
       return slug;
     },
 
-    async recordMatches(slug, attributions) {
-      await recordDiscoveryMatches(env, slug, attributions, today());
+    async recordMatches(slug, attributions, via) {
+      await recordDiscoveryMatches(env, slug, attributions, today(), via);
+    },
+
+    async grantCurated(slug) {
+      await recordImportGrant(env, {
+        recipe: slug,
+        tenant: CURATED_TENANT,
+        member: CURATED_TENANT,
+        via: CURATED_VIA,
+        importedAt: today(),
+      });
     },
 
     async deletePushed(url) {
@@ -1036,14 +1133,24 @@ export function buildDiscoveryDeps(env: Env, now: () => number = () => Date.now(
 
     async loadRetries(nowIso, limit) {
       const rows = await loadDueRetries(env, nowIso, limit);
-      return rows.map((r) => ({
-        url: r.url ?? "",
-        title: r.title ?? "",
-        summary: null,
-        source: r.source ?? "",
-        existingRowId: r.id,
-        attempts: r.attempts,
-      }));
+      return rows.map((r) => {
+        // A parked curated-source row must re-enter the pipeline AS curated: the curated
+        // tier skips taste matching and lands the reserved tenant's grant (D13), and a
+        // retry that lost the flag would mint discovery_matches + household grants.
+        const curated = !r.pushed && r.source === "curated";
+        return {
+          url: r.url ?? "",
+          title: r.title ?? "",
+          summary: null,
+          source: r.source ?? "",
+          existingRowId: r.id,
+          attempts: r.attempts,
+          curated,
+          // The grant `via` from the log row's origin: a pushed row is a satellite
+          // candidate; a feed/email row carries its source provenance; else agent.
+          via: r.pushed ? "satellite" : curated ? CURATED_VIA : r.source ? `feed:${r.source}` : "agent",
+        };
+      });
     },
 
     async recordLog(entry, opts) {

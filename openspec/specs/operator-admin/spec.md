@@ -68,12 +68,12 @@ The Access gate SHALL apply to the admin surface **only**; the MCP surface SHALL
 
 ### Requirement: Member onboarding mints an invite without a public log
 
-The admin surface SHALL onboard a member entirely within the Worker, writing the allowlist entry (`tenant:<id>`) and an invite mapping (`invite:<code> → <id>`) to `TENANT_KV` through the Worker's own binding, with the username canonicalized to lowercase. The minted invite SHALL be a SINGLE-USE BOOTSTRAP: it carries an expiry and it authenticates the member only until their first passkey enrollment consumes it (see the `passkey-auth` capability). When no invite code is supplied, the Worker SHALL generate a random one. The response SHALL surface the invite code and the connector URL **once** to the authenticated operator, and the Worker SHALL NOT write the invite code to any log, run summary, or other externally-readable sink. The connector URL SHALL be derived from the request's own origin (`<origin>/mcp`).
+The admin surface SHALL onboard a member entirely within the Worker, writing the allowlist entry (`tenant:<id>`), the tenant's FOUNDING MEMBER row in the D1 `members` table (member id and handle equal to the canonical tenant id, written in the same flow), and an invite mapping (`invite:<code>` resolving to the `(tenant, member)` pair) to their stores through the Worker's own bindings, with the username canonicalized to lowercase and validated against the ONE new-mint handle grammar (`^[a-z0-9_]{3,20}$`; a failing username is refused with a structured error naming the grammar — existing tenants are grandfathered and unaffected). The minted invite SHALL be a SINGLE-USE BOOTSTRAP: it carries an expiry and it authenticates the member only until their first passkey enrollment consumes it (see the `passkey-auth` capability). When no invite code is supplied, the Worker SHALL generate a random one. The response SHALL surface the invite code and the connector URL **once** to the authenticated operator, and the Worker SHALL NOT write the invite code to any log, run summary, or other externally-readable sink. The connector URL SHALL be derived from the request's own origin (`<origin>/mcp`).
 
-#### Scenario: Onboard creates the allowlist entry and a single-use invite
+#### Scenario: Onboard creates the allowlist entry, the founding member, and a single-use invite
 
 - **WHEN** the operator onboards `Casey` (no code supplied)
-- **THEN** the Worker writes `tenant:casey` and a single-use `invite:<generated> → casey` mapping to `TENANT_KV`, and returns the generated code plus `<origin>/mcp` to the operator
+- **THEN** the Worker writes `tenant:casey`, a `members` row with id and handle `casey` under tenant `casey`, and a single-use `invite:<generated>` resolving to `(casey, casey)`, and returns the generated code plus `<origin>/mcp` to the operator
 
 #### Scenario: Invite code is shown once, never logged
 
@@ -83,45 +83,26 @@ The admin surface SHALL onboard a member entirely within the Worker, writing the
 #### Scenario: Username is canonicalized
 
 - **WHEN** the operator onboards a mixed-case username such as `Casey`
-- **THEN** the allowlist key, the stored record id, and the invite target are all the canonical lowercase form (`casey`)
+- **THEN** the allowlist key, the stored record id, the founding member id and handle, and the invite target are all the canonical lowercase form (`casey`)
 
-### Requirement: Member revocation fully purges tenant state
+#### Scenario: A grammar-violating username is refused
 
-The admin surface SHALL revoke a member within the Worker by removing their allowlist entry (`tenant:<id>`), deleting every invite mapping that resolves to that member (located by scanning `invite:*`, so no code need be supplied), deleting the member's per-tenant Kroger refresh token (`kroger:refresh:<id>`), deleting every web session record that resolves to that member (located by scanning `session:*` in `TENANT_KV` and matching the stored tenant), deleting the member's enrolled passkeys (all `webauthn_credentials` rows for that tenant), and purging the member's per-tenant D1 rows — every tenant-scoped table and their attributed `recipe_notes` / `store_notes` — through `src/db.ts`. After revocation the member's previously-issued access token SHALL no longer resolve to a tenant, even though the token may still exist in the OAuth store, and their previously-issued session cookie SHALL no longer authenticate (the session middleware's allowlist re-check locks them out even before the purge, and the purge removes the records). The shared recipe corpus SHALL NOT be deleted (recipes are not tenant-owned).
-
-#### Scenario: Revoke removes the allowlist entry and all invites
-
-- **WHEN** the operator revokes `casey`
-- **THEN** `tenant:casey` is deleted and every `invite:*` whose value is `casey` is deleted, with no invite code supplied by the operator
-
-#### Scenario: Revoke purges per-tenant D1, passkeys, and the Kroger token
-
-- **WHEN** the operator revokes `casey`
-- **THEN** every per-tenant D1 table is cleared of `casey`'s rows, `casey`'s attributed notes and all `casey` `webauthn_credentials` rows are removed, and `kroger:refresh:casey` is deleted
-
-#### Scenario: A revoked token stops resolving
-
-- **WHEN** a request arrives carrying `casey`'s previously-issued access token after revocation
-- **THEN** tenant resolution fails (the allowlist entry is gone) and no tool runs, even though the token still exists in the OAuth store
-
-#### Scenario: Revoke purges web sessions and the cookie stops authenticating
-
-- **WHEN** the operator revokes `casey` while `casey` holds live web sessions
-- **THEN** every `session:*` record resolving to `casey` is deleted, and a request replaying `casey`'s session cookie receives a structured `unauthorized` 401
+- **WHEN** the operator attempts to onboard `caseys-kitchen` (hyphen) or `cj` (too short)
+- **THEN** the onboard is refused with a structured error naming the handle grammar, nothing is written, and every existing grandfathered tenant keeps working unmodified
 
 ### Requirement: Invite rotation
 
-The admin surface SHALL rotate a member's invite code: mint a new single-use bootstrap `invite:<new> → <id>` mapping and delete the member's prior invite mapping(s), without otherwise altering the member's allowlist entry or per-tenant data. The rotated code SHALL be valid REGARDLESS of the grace control — it is the recovery primitive that lets a member who lost every device, or who never enrolled before grace was turned off, sign in once to enroll a (new) passkey. The new code SHALL be surfaced once to the operator under the same no-log guarantee as onboarding.
+The admin surface SHALL rotate a member's invite code: mint a new single-use bootstrap `invite:<new>` mapping resolving to that member's `(tenant, member)` pair and delete the member's prior invite mapping(s), without otherwise altering the tenant's allowlist entry, the member's row, or per-tenant data. Rotation SHALL be member-addressed and SHALL default to the founding member when no member is named — which keeps the existing tenant-addressed admin endpoint contract unchanged while every household has exactly one member. The rotated code SHALL be valid REGARDLESS of the grace control — it is the recovery primitive that lets a member who lost every device, or who never enrolled before grace was turned off, sign in once to enroll a (new) passkey. The new code SHALL be surfaced once to the operator under the same no-log guarantee as onboarding.
 
 #### Scenario: Rotate replaces the code and invalidates the old one
 
 - **WHEN** the operator rotates `casey`'s invite
-- **THEN** a new single-use invite mapping is created, every prior `invite:* → casey` mapping is deleted, and the old code no longer authorizes; `casey`'s allowlist entry and per-tenant data are unchanged
+- **THEN** a new single-use invite mapping resolving to `(casey, casey)` is created, every prior invite mapping resolving to that member is deleted, and the old code no longer authorizes; `casey`'s allowlist entry, member row, and per-tenant data are unchanged
 
 #### Scenario: A rotated code works even with grace off
 
 - **WHEN** grace is off and the operator rotates `casey`'s invite for recovery
-- **THEN** `casey` can redeem the new code at `/login` to establish a session and enroll a passkey, and that enrollment consumes the code
+- **THEN** `casey` can redeem the new code at `/login` to establish a session bound to `(casey, casey)` and enroll a passkey, and that enrollment consumes the code
 
 ### Requirement: Tenant listing is operational-only
 
@@ -649,22 +630,32 @@ The Status area SHALL present the live dependencies — the **D1 reachability** 
 
 ### Requirement: Members roster shows summary tiles and a per-member action menu
 
-The Members area SHALL render a summary stat-tile row (Members, Active, Pending, Kroger linked counts, derived from the tenant listing) above a roster of member rows, composed from the shared component kit's stat-card grid and `Item`/`ItemGroup` primitives. Each roster row SHALL show the member's avatar (initials), `@username`, an owner badge when applicable, an active/pending status badge, a Kroger-linked badge when linked, and an activity meta line (cooked/favorites counts and last-active age for an active member; invited age for a pending one). Each row SHALL carry a per-member actions menu (the kit `DropdownMenu`) offering **Rotate invite**, **Link Kroger** (or **Re-link Kroger** when already linked) for an active member, and **Revoke** (label varying by status: "Revoke invite" for pending, "Revoke access" for active) — invoking the existing onboard/rotate/kroger-login/revoke operations unchanged. Activating the actions menu SHALL NOT also navigate to the member's detail view.
+The Members area SHALL render a summary stat-tile row (Households, Members, Active, Pending, Kroger linked counts, derived from the tenant listing) above a roster GROUPED BY HOUSEHOLD, composed from the shared component kit's stat-card grid and `Item`/`ItemGroup` primitives. Each household group SHALL show the household id, its member count, a Kroger-linked badge when linked, and household-level actions (the kit `DropdownMenu`): **Link Kroger** (or **Re-link Kroger**), and **Purge household** (the existing revocation operation, relabeled to its split-lifecycle name). Within a group, each member row SHALL show the member's avatar (initials), `@handle`, an active/pending status badge, and an activity meta line (cooked/favorites counts and last-active age for an active member; invited age for a pending one), with member-level actions: **Rotate invite** and **Revoke member** (the member-revoke operation; for a household's only member the menu offers **Revoke access** mapping to household purge instead, mirroring the API's last-member refusal). Single-member households (the deployment's common case) SHALL render compactly — one row carrying both the household and member affordances — so the regrouping adds no noise until a second member exists. Activating an actions menu SHALL NOT also navigate to the member's detail view. The regrouped roster SHALL ship with admin Playwright coverage (page objects + specs under `admin/visual/`).
 
 #### Scenario: Stat tiles reflect the roster
 
 - **WHEN** the operator opens the Members area
-- **THEN** the stat tiles show the total member count, the active count, the pending count, and the Kroger-linked count, each matching the roster below
+- **THEN** the stat tiles show the household count, total member count, the active count, the pending count, and the Kroger-linked count, each matching the grouped roster below
+
+#### Scenario: A multi-member household groups its members
+
+- **WHEN** a household holds three members
+- **THEN** the roster renders one household group with member count 3 and three member rows inside it, each with its own status badge, meta line, and member-level actions menu
 
 #### Scenario: A pending member's row reflects its state
 
 - **WHEN** a member has been invited but has not yet connected
-- **THEN** their row shows a pending badge, no Kroger badge, and an "invited <age>" meta line instead of activity counts
+- **THEN** their row shows a pending badge and an "invited <age>" meta line instead of activity counts
 
-#### Scenario: Row actions menu invokes the existing operations
+#### Scenario: Row actions menus invoke the split lifecycle correctly
 
-- **WHEN** the operator opens a roster row's actions menu and selects Rotate invite, Link Kroger, or Revoke
-- **THEN** the corresponding existing admin operation runs (invite rotation, Kroger consent-link minting, or revocation) unchanged, and the menu interaction does not navigate to the member's detail view
+- **WHEN** the operator uses the menus on a multi-member household
+- **THEN** member rows offer Rotate invite and Revoke member (member-revoke), the household group offers Kroger linking and Purge household (full purge), and revoking a non-last member removes exactly that member while the household and its other members survive
+
+#### Scenario: The last member's menu routes to purge
+
+- **WHEN** the operator opens the actions menu for a household's only member
+- **THEN** the member-revoke action is not offered (or is disabled with the refusal reason); the offered Revoke access action performs household purge
 
 ### Requirement: Invite flow is a dialog with a shown-once banner
 
@@ -1157,4 +1148,71 @@ The admin surface SHALL let the operator mint a GROUP INVITE CODE that authorize
 
 - **WHEN** the operator revokes a group invite code through which members have already signed up
 - **THEN** the code admits no further signups, and every member already created through it retains their account and access
+
+### Requirement: Household purge fully removes a tenant
+
+The admin surface SHALL purge a household within the Worker — the whole-tenant half of the split lifecycle (the existing revoke route and roster action retain this behavior) — by removing its allowlist entry (`tenant:<id>`), deleting every invite mapping that resolves to that tenant (located by scanning `invite:*`, so no code need be supplied), deleting the tenant's per-tenant Kroger refresh token (`kroger:refresh:<id>`), deleting every web session record that resolves to that tenant (located by scanning `session:*` in `TENANT_KV` and matching the stored tenant), deleting the household's enrolled passkeys (all `webauthn_credentials` rows for that tenant), and purging the household's per-tenant D1 rows — every tenant-scoped table INCLUDING the `members` table, plus its members' attributed `recipe_notes` / `store_notes` — through `src/db.ts`. The purge SHALL also clear the household's social rows in BOTH directions: `friendships` and `social_requests` where the tenant is either party, its `member_invites`, `nicknames` rows the household holds AND rows targeting its members, and `blocks` it minted as well as blocks recorded against it or its members. After the purge the household's previously-issued access tokens SHALL no longer resolve, even though the tokens may still exist in the OAuth store, and previously-issued session cookies SHALL no longer authenticate (the resolver's allowlist re-check locks them out even before the purge, and the purge removes the records). The shared recipe corpus SHALL NOT be deleted (recipes are not tenant-owned); the household's `recipe_imports` grants are removed with its per-tenant rows, so its recipes leave every friend's lens.
+
+#### Scenario: Purge removes the allowlist entry and all invites
+
+- **WHEN** the operator purges `casey`'s household
+- **THEN** `tenant:casey` is deleted and every `invite:*` resolving to that tenant is deleted, with no invite code supplied by the operator
+
+#### Scenario: Purge removes per-tenant D1, members, passkeys, and the Kroger token
+
+- **WHEN** the operator purges `casey`'s household
+- **THEN** every per-tenant D1 table is cleared of `casey`'s rows — including every `members` row for the tenant — the members' attributed notes and all `webauthn_credentials` rows are removed, and `kroger:refresh:casey` is deleted
+
+#### Scenario: Purge severs the social graph in both directions
+
+- **WHEN** the operator purges a household that holds friendships, pending requests in both directions, minted invite links, nicknames, and block records
+- **THEN** no `friendships`, `social_requests`, `member_invites`, `nicknames`, or `blocks` row referencing that tenant or its members survives, and former friends' lenses no longer include its recipes
+
+#### Scenario: A purged household's token stops resolving
+
+- **WHEN** a request arrives carrying a previously-issued access token after the household purge
+- **THEN** tenant resolution fails (the allowlist entry is gone) and no tool runs, even though the token still exists in the OAuth store
+
+#### Scenario: Purge removes web sessions and the cookie stops authenticating
+
+- **WHEN** the operator purges a household while its members hold live web sessions
+- **THEN** every `session:*` record resolving to that tenant is deleted, and a request replaying such a session cookie receives a structured `unauthorized` 401
+
+### Requirement: Member revoke removes one member without disturbing the household
+
+The admin surface SHALL provide a member-revoke operation, distinct from household purge, that removes a SINGLE member from a tenant: deleting the `members` row, the member's `webauthn_credentials` rows, every web session record resolving to that member (including pre-split records that default to the founding member), every invite mapping resolving to that member, the member's attributed `recipe_notes` / `store_notes` rows (`author = member id`), and the member's social rows — nicknames they set and nicknames targeting them, their outgoing `social_requests` (cancelled), `member_invites` they minted (revoked), and block records naming them as `blocked_member` — through `src/db.ts` for the D1 rows. Member-revoke SHALL NOT touch the tenant's allowlist entry, the `tenants` registry row, the Kroger refresh token, or any household-scoped per-tenant table. After member-revoke, the member's previously-issued MCP access tokens SHALL no longer resolve (the shared resolver's member-liveness check fails, even though grant records may persist in the OAuth store) and their session cookies SHALL no longer authenticate. Member-revoke of a tenant's LAST member SHALL be refused with a structured error naming household purge as the applicable operation — an allowlisted household with zero members is never produced. Member-revoke SHALL be operable from the admin roster UI (see the roster requirement); member-initiated removal is the member-app governance flow, not this operation.
+
+#### Scenario: Member-revoke removes only member-scoped state
+
+- **WHEN** the operator revokes one member of a household
+- **THEN** the member's `members` row, credentials, sessions, invites, authored notes, set-and-targeting nicknames, outgoing requests, and minted invite links are removed or terminally resolved, while the household's allowlist entry, registry row, Kroger token, and household-scoped tables (pantry, plan, list, ...) are untouched
+
+#### Scenario: A member-revoked identity stops resolving on both surfaces
+
+- **WHEN** a request arrives carrying a revoked member's MCP token or session cookie while the tenant remains allowlisted
+- **THEN** the member-liveness check fails and the request receives a structured `unauthorized` — no tool or route runs
+
+#### Scenario: The last member cannot be member-revoked
+
+- **WHEN** the operator attempts member-revoke on a tenant whose `members` table holds exactly one row
+- **THEN** the operation is refused with a structured error directing the operator to household purge, and nothing is deleted
+
+### Requirement: The Config area exposes the deployment profile with guarded flips
+
+The admin panel's Config area SHALL render a deployment-profile card showing the resolved profile (`self-hosted` | `saas`, including the unset-defaults-to-self-hosted state) beside the curated-source control (`curated_source_url`: shown with its compiled default when unset; editable; clearable to disable curated intake). Profile changes SHALL go through an Access-gated admin API operation on the `operator_config` write path enforcing the flip guards (see `shared-corpus`): self-hosted → SaaS requires an explicit confirmation whose copy states that implicit all-to-all visibility ends immediately and the public `/cookbook` site narrows to the curated tier; SaaS → self-hosted is refused with a structured error naming the consent-inversion guard unless at most one household owns a non-empty (non-curated) cookbook. A refused flip SHALL write nothing and the card SHALL present the refusal reason. The card SHALL ship with admin Playwright coverage (page object + spec under `admin/visual/`) like every admin surface.
+
+#### Scenario: The card reflects the unset default
+
+- **WHEN** the operator opens the Config area on a deployment that never wrote `deployment_profile`
+- **THEN** the card shows the profile as self-hosted (default) and the curated-source control shows the compiled default URL as not-yet-overridden
+
+#### Scenario: Flipping to SaaS demands the confirm
+
+- **WHEN** the operator submits self-hosted → SaaS without the confirmation
+- **THEN** the API returns the structured needs-confirm response and no write occurs; re-submitting with the confirmation writes the flag
+
+#### Scenario: An unsafe flip back is refused with the reason
+
+- **WHEN** the operator attempts SaaS → self-hosted while two households own non-empty cookbooks
+- **THEN** the operation returns a structured refusal naming the consent-inversion guard, the profile remains `saas`, and the card renders the reason
 

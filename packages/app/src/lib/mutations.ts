@@ -19,7 +19,7 @@ import { useMutation, type QueryClient } from "@tanstack/react-query";
 import { toast } from "@yamp/ui";
 import { api, apiError, type ApiError } from "./api";
 import { REGISTERED_MUTATION_KEYS } from "./persist";
-import type { GroceryRow, Overlay, PantryRow, PlanOp, PlanOpsResult, ToBuyView } from "./data";
+import type { GroceryRow, NoteTier, Overlay, PantryRow, PlanOp, PlanOpsResult, ToBuyView } from "./data";
 import { projectGroceryAction } from "@yamp/ui";
 import type { GroceryListData, ShopCommitRequest, ShopCommitResult } from "@yamp/contract";
 import { appFetch } from "./api";
@@ -133,7 +133,8 @@ export interface NoteAddVars {
   slug: string;
   body: string;
   tags: string[];
-  private: boolean;
+  /** Visibility tier (note-visibility-tiers) — the composer always sets one. */
+  tier: NoteTier;
   /** Client-minted — the idempotency key (D8): a replayed delivery upserts, not duplicates. */
   created_at: string;
 }
@@ -142,6 +143,8 @@ export interface NoteEditVars {
   slug: string;
   created_at: string;
   body: string;
+  /** Re-tiers the note when passed (rides the same idempotent note-edit write). */
+  tier?: NoteTier;
 }
 
 export interface NoteRemoveVars {
@@ -168,6 +171,13 @@ export interface VibeRemoveVars {
 export interface ProposalConfirmVars {
   id: string;
   accept: boolean;
+}
+
+export interface NicknameSetVars {
+  /** The target member id — with the session's viewer, the canonical replay key. */
+  member: string;
+  /** Empty string = the empty-save clear (the keyed delete). */
+  nickname: string;
 }
 
 // --- shared plumbing ----------------------------------------------------------------
@@ -817,8 +827,8 @@ function registryRows(qc: QueryClient): RegistryRow[] {
     {
       key: ["notes", "edit"],
       defaults: {
-        mutationFn: async ({ slug, created_at, body }: NoteEditVars) => {
-          const args = { param: { slug, created_at }, json: { body } };
+        mutationFn: async ({ slug, created_at, body, tier }: NoteEditVars) => {
+          const args = { param: { slug, created_at }, json: { body, tier } };
           return okOrThrow(await api.api.cookbook.recipes[":slug"].notes[":created_at"].$patch(args));
         },
         onError: (err: unknown) => toast(messageOf(err, "Couldn't save the note — try again")),
@@ -858,6 +868,38 @@ function registryRows(qc: QueryClient): RegistryRow[] {
           okOrThrow(await api.api.vibes[":id"].$delete({ param: { id } })),
         onError: (err: unknown) => toast(messageOf(err, "Couldn't remove the vibe — try again")),
         onSettled: () => qc.invalidateQueries({ queryKey: ["vibes"] }),
+      },
+    },
+    {
+      key: ["people", "nickname"],
+      defaults: {
+        mutationFn: async ({ member, nickname }: NicknameSetVars) =>
+          okOrThrow(
+            await appFetch(`/api/people/nicknames/${encodeURIComponent(member)}`, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ nickname }),
+            }),
+          ),
+        onMutate: (vars: NicknameSetVars) => {
+          // Optimistic: the People page stays interactive across a connectivity drop —
+          // the edited alias (or its clearing) renders immediately on members + friends.
+          qc.setQueryData<import("./data").PeoplePayload>(["people"], (cur) =>
+            cur
+              ? {
+                  ...cur,
+                  members: cur.members.map((m) =>
+                    m.id === vars.member ? { ...m, nickname: vars.nickname.trim() || null } : m,
+                  ),
+                  friends: cur.friends.map((f) =>
+                    f.member.id === vars.member ? { ...f, nickname: vars.nickname.trim() || null } : f,
+                  ),
+                }
+              : cur,
+          );
+        },
+        onError: (err: unknown) => toast(messageOf(err, "Couldn't save the nickname — try again")),
+        onSettled: () => qc.invalidateQueries({ queryKey: ["people"] }),
       },
     },
     {
@@ -1003,4 +1045,9 @@ export function useVibeRemove() {
 
 export function useProposalConfirm() {
   return useMutation<void, ApiError, ProposalConfirmVars>({ mutationKey: ["proposals", "confirm"] });
+}
+
+/** Nickname upsert / empty-save clear — the People page's ONE class (b) write. */
+export function useNicknameSet() {
+  return useMutation<void, ApiError, NicknameSetVars>({ mutationKey: ["people", "nickname"] });
 }

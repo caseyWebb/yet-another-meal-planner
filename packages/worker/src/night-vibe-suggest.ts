@@ -17,6 +17,7 @@ import type { Tenant } from "./tenant.js";
 import type { AiTrigger } from "./ai.js";
 import { runTool } from "./errors.js";
 import { loadRecipeIndex, loadRecipeEmbeddings } from "./recipe-index.js";
+import { memberViewer } from "./visibility.js";
 import type { RecipeIndex } from "./recipes.js";
 import { readProfile } from "./profile-db.js";
 import { readOverlay } from "./profile-db.js";
@@ -60,7 +61,7 @@ export async function runDerivation(
   trigger: AiTrigger = "cron",
 ): Promise<DerivationResult> {
   const [index, embeddings, overlay, cookedDates, paletteVecs, existingVibes, profile] = await Promise.all([
-    loadRecipeIndex(env).catch(() => ({}) as RecipeIndex),
+    loadRecipeIndex(env, memberViewer(tenant)).catch(() => ({}) as RecipeIndex),
     loadRecipeEmbeddings(env),
     readOverlay(env, tenant),
     readCookedDatesByRecipe(env, tenant),

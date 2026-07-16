@@ -14,10 +14,12 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as ConnectRouteImport } from './routes/connect'
 import { Route as AppRouteImport } from './routes/_app'
 import { Route as AppIndexRouteImport } from './routes/_app.index'
+import { Route as JoinTokenRouteImport } from './routes/join.$token'
 import { Route as AppRetrospectiveRouteImport } from './routes/_app.retrospective'
 import { Route as AppProposeRouteImport } from './routes/_app.propose'
 import { Route as AppProfileRouteImport } from './routes/_app.profile'
 import { Route as AppPlanRouteImport } from './routes/_app.plan'
+import { Route as AppPeopleRouteImport } from './routes/_app.people'
 import { Route as AppPantryRouteImport } from './routes/_app.pantry'
 import { Route as AppLogRouteImport } from './routes/_app.log'
 import { Route as AppGroceryRouteImport } from './routes/_app.grocery'
@@ -48,6 +50,11 @@ const AppIndexRoute = AppIndexRouteImport.update({
   path: '/',
   getParentRoute: () => AppRoute,
 } as any)
+const JoinTokenRoute = JoinTokenRouteImport.update({
+  id: '/join/$token',
+  path: '/join/$token',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AppRetrospectiveRoute = AppRetrospectiveRouteImport.update({
   id: '/retrospective',
   path: '/retrospective',
@@ -66,6 +73,11 @@ const AppProfileRoute = AppProfileRouteImport.update({
 const AppPlanRoute = AppPlanRouteImport.update({
   id: '/plan',
   path: '/plan',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppPeopleRoute = AppPeopleRouteImport.update({
+  id: '/people',
+  path: '/people',
   getParentRoute: () => AppRoute,
 } as any)
 const AppPantryRoute = AppPantryRouteImport.update({
@@ -103,10 +115,12 @@ export interface FileRoutesByFullPath {
   '/grocery': typeof AppGroceryRoute
   '/log': typeof AppLogRoute
   '/pantry': typeof AppPantryRoute
+  '/people': typeof AppPeopleRoute
   '/plan': typeof AppPlanRoute
   '/profile': typeof AppProfileRoute
   '/propose': typeof AppProposeRoute
   '/retrospective': typeof AppRetrospectiveRoute
+  '/join/$token': typeof JoinTokenRoute
   '/recipe/$slug': typeof AppRecipeSlugRoute
 }
 export interface FileRoutesByTo {
@@ -117,10 +131,12 @@ export interface FileRoutesByTo {
   '/grocery': typeof AppGroceryRoute
   '/log': typeof AppLogRoute
   '/pantry': typeof AppPantryRoute
+  '/people': typeof AppPeopleRoute
   '/plan': typeof AppPlanRoute
   '/profile': typeof AppProfileRoute
   '/propose': typeof AppProposeRoute
   '/retrospective': typeof AppRetrospectiveRoute
+  '/join/$token': typeof JoinTokenRoute
   '/': typeof AppIndexRoute
   '/recipe/$slug': typeof AppRecipeSlugRoute
 }
@@ -134,10 +150,12 @@ export interface FileRoutesById {
   '/_app/grocery': typeof AppGroceryRoute
   '/_app/log': typeof AppLogRoute
   '/_app/pantry': typeof AppPantryRoute
+  '/_app/people': typeof AppPeopleRoute
   '/_app/plan': typeof AppPlanRoute
   '/_app/profile': typeof AppProfileRoute
   '/_app/propose': typeof AppProposeRoute
   '/_app/retrospective': typeof AppRetrospectiveRoute
+  '/join/$token': typeof JoinTokenRoute
   '/_app/': typeof AppIndexRoute
   '/_app/recipe/$slug': typeof AppRecipeSlugRoute
 }
@@ -152,10 +170,12 @@ export interface FileRouteTypes {
     | '/grocery'
     | '/log'
     | '/pantry'
+    | '/people'
     | '/plan'
     | '/profile'
     | '/propose'
     | '/retrospective'
+    | '/join/$token'
     | '/recipe/$slug'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -166,10 +186,12 @@ export interface FileRouteTypes {
     | '/grocery'
     | '/log'
     | '/pantry'
+    | '/people'
     | '/plan'
     | '/profile'
     | '/propose'
     | '/retrospective'
+    | '/join/$token'
     | '/'
     | '/recipe/$slug'
   id:
@@ -182,10 +204,12 @@ export interface FileRouteTypes {
     | '/_app/grocery'
     | '/_app/log'
     | '/_app/pantry'
+    | '/_app/people'
     | '/_app/plan'
     | '/_app/profile'
     | '/_app/propose'
     | '/_app/retrospective'
+    | '/join/$token'
     | '/_app/'
     | '/_app/recipe/$slug'
   fileRoutesById: FileRoutesById
@@ -195,6 +219,7 @@ export interface RootRouteChildren {
   ConnectRoute: typeof ConnectRoute
   LoginRoute: typeof LoginRoute
   SignupRoute: typeof SignupRoute
+  JoinTokenRoute: typeof JoinTokenRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -234,6 +259,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppIndexRouteImport
       parentRoute: typeof AppRoute
     }
+    '/join/$token': {
+      id: '/join/$token'
+      path: '/join/$token'
+      fullPath: '/join/$token'
+      preLoaderRoute: typeof JoinTokenRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/_app/retrospective': {
       id: '/_app/retrospective'
       path: '/retrospective'
@@ -260,6 +292,13 @@ declare module '@tanstack/react-router' {
       path: '/plan'
       fullPath: '/plan'
       preLoaderRoute: typeof AppPlanRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/people': {
+      id: '/_app/people'
+      path: '/people'
+      fullPath: '/people'
+      preLoaderRoute: typeof AppPeopleRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/pantry': {
@@ -305,6 +344,7 @@ interface AppRouteChildren {
   AppGroceryRoute: typeof AppGroceryRoute
   AppLogRoute: typeof AppLogRoute
   AppPantryRoute: typeof AppPantryRoute
+  AppPeopleRoute: typeof AppPeopleRoute
   AppPlanRoute: typeof AppPlanRoute
   AppProfileRoute: typeof AppProfileRoute
   AppProposeRoute: typeof AppProposeRoute
@@ -318,6 +358,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppGroceryRoute: AppGroceryRoute,
   AppLogRoute: AppLogRoute,
   AppPantryRoute: AppPantryRoute,
+  AppPeopleRoute: AppPeopleRoute,
   AppPlanRoute: AppPlanRoute,
   AppProfileRoute: AppProfileRoute,
   AppProposeRoute: AppProposeRoute,
@@ -333,6 +374,7 @@ const rootRouteChildren: RootRouteChildren = {
   ConnectRoute: ConnectRoute,
   LoginRoute: LoginRoute,
   SignupRoute: SignupRoute,
+  JoinTokenRoute: JoinTokenRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

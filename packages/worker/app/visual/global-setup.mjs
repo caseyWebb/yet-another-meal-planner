@@ -11,11 +11,14 @@
 import { SEED } from "../../admin/visual/seed.mjs";
 
 const PORT = Number(process.env.PW_APP_PORT || 8788);
+// The SaaS-variant sibling server (setup.mjs spawns it beside the main one) — the `saas`
+// project's specs hit it directly, so it must be warm before any worker starts too.
+const SAAS_PORT = Number(process.env.PW_APP_SAAS_PORT || 8789);
 // Must match setup.mjs's APP_SESSION_TOKEN (both derive it from the same seeded member).
 const APP_SESSION_TOKEN = `pw-app-session-${SEED.members.active}`;
 
-export default async function globalSetup() {
-  const url = `http://127.0.0.1:${PORT}/api/session`;
+async function warm(port) {
+  const url = `http://127.0.0.1:${port}/api/session`;
   const headers = { cookie: `__Host-session=${APP_SESSION_TOKEN}` };
   const attempts = 30;
   for (let i = 1; i <= attempts; i++) {
@@ -28,6 +31,11 @@ export default async function globalSetup() {
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
   throw new Error(
-    `app-ui warmup: GET /api/session never returned 200 for the seeded member session after ${attempts} tries`,
+    `app-ui warmup: GET /api/session on :${port} never returned 200 for the seeded member session after ${attempts} tries`,
   );
+}
+
+export default async function globalSetup() {
+  await warm(PORT);
+  await warm(SAAS_PORT);
 }

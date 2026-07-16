@@ -283,6 +283,9 @@ export async function applyPreferencesPatch(
     dietary: "dietary" in merged ? JSON.stringify(merged.dietary) : null,
     rotation: "rotation" in merged ? JSON.stringify(merged.rotation) : null,
     custom: "custom" in merged ? JSON.stringify(merged.custom) : null,
+    // Household-scoped curated-tier hide (visibility lens): a boolean over the
+    // profile.curated_hide column; deleting the key (null patch) clears back to shown.
+    curated_hide: "curated_hide" in merged ? (merged.curated_hide === true ? 1 : 0) : null,
   };
   const profileStmt = profileUpsertStmt(env, tenant, profileFields);
   if (profileStmt) stmts.push(profileStmt);
@@ -589,7 +592,7 @@ export function registerWriteTools(
     "update_preferences",
     {
       description:
-        "Edit the caller's grocery preferences with a deep merge-patch (RFC 7396): keys present in `patch` set/overwrite, a key set to null is DELETED, nested objects merge to any depth, and arrays replace wholesale. Only the keys you touch change. Defined top-level keys include cadence, planning_cadence_days, weekly_budget, stores ({primary, preferred_location, location_zip, nicknames:{[store_slug]: private household nickname}}), brands, dietary, rotation, and custom. Offline nicknames are household preferences only: they never change the shared store registry. Returns { updated: 'preferences' } plus any deprecation warnings.",
+        "Edit the caller's grocery preferences with a deep merge-patch (RFC 7396): keys present in `patch` set/overwrite, a key set to null is DELETED, nested objects merge to any depth, and arrays replace wholesale. Only the keys you touch change. Defined top-level keys include cadence, planning_cadence_days, weekly_budget, stores ({primary, preferred_location, location_zip, nicknames:{[store_slug]: private household nickname}}), brands, dietary, rotation, curated_hide (boolean, HOUSEHOLD-scoped: true hides the deployment's curated recipe collection from your whole household's cookbook — reversible, nothing is deleted; only meaningful on SaaS-profile deployments), and custom. Offline nicknames are household preferences only: they never change the shared store registry. Returns { updated: 'preferences' } plus any deprecation warnings.",
       inputSchema: { patch: z.record(z.string(), z.unknown()) },
     },
     ({ patch }) => runTool(() => applyPreferencesPatch(env, username, patch)),
