@@ -19,56 +19,46 @@ The system SHALL maintain a shared D1 `stores` table, one row per **specific sto
 
 ### Requirement: Store CRUD tools
 
-The system SHALL provide `list_stores()`, `read_store(slug)`, `add_store(...)`, `update_store(slug, operations)`, and `remove_store(slug)`. `read_store` SHALL return identity only. `update_store` SHALL accept **identity operations only** (set `name` / `label` / `chain` / `address` / `domain` / `location_id`), operation-style like `update_pantry` / `update_kitchen`; it SHALL NOT carry aisle, item-location, or not-carried operations — those facets are removed and live in store notes. Stores are shared corpus; any MCP holder MAY create or edit one with no extra gate (the `update_discovery_sources` posture). `list_stores` SHALL report, per store, whether it has layout notes (`has_notes`) rather than a structured aisle layout. All mutations SHALL persist to D1 and return structured results and errors.
+The member MCP surface SHALL carry the mid-walk, hands-busy **capture pair only**: `add_store(...)` (register a new store location, identity only) and `add_store_note` (the notes requirement below). Store listing, identity reads, identity edits (`set_identity`-style operations over `name` / `label` / `chain` / `address` / `domain` / `location_id`), and store removal SHALL be served by the member/admin web surfaces over the same shared store operations — there are no `list_stores`, `read_store`, `update_store`, or `remove_store` MCP tools. The shared operations keep their contracts: identity-only rows in the shared D1 `stores` registry, no aisle/item-location/not-carried operations (layout lives in store notes), structured results and errors (`not_found` on an unknown slug, `slug_exists` on a duplicate registration, `validation_failed` on an invalid slug or empty name). Stores are shared corpus; any member may capture one with no extra gate.
 
-#### Scenario: List reports note-backed layout
+#### Scenario: Mid-walk capture registers a store
 
-- **WHEN** `list_stores` is called
-- **THEN** it returns each store's `slug`, `name`, `label`, `domain`, and `has_notes` (whether layout-tagged store notes exist for it)
+- **WHEN** the agent calls `add_store` with a kebab-case location slug and a name during a shopping conversation
+- **THEN** the store row is created in the shared registry (identity only, D1-backed) and structured errors report a duplicate slug or invalid input
 
-#### Scenario: Unknown slug is a structured error
+#### Scenario: Store maintenance has no member chat tools
 
-- **WHEN** `read_store`, `update_store`, or `remove_store` is called with an unknown slug
-- **THEN** a structured `not_found` is returned rather than a throw
+- **WHEN** the member MCP tool surface is enumerated
+- **THEN** `add_store` is the only store-registry tool; listing, reads, identity edits, and removal live on the member/admin surfaces over the same operations
 
 #### Scenario: A removed layout op is rejected, not written
 
-- **WHEN** `update_store` is called with a `set_aisles` / `add_item_location` / `add_doesnt_carry`-style operation
+- **WHEN** any store-identity write surface receives a `set_aisles` / `add_item_location` / `add_doesnt_carry`-style operation
 - **THEN** it returns a structured validation error or conflict and writes nothing
 
 ### Requirement: Attributed per-tenant store notes
 
-The system SHALL store store notes as rows in the D1 `store_notes` table, authored by the writing tenant (the `author` column, set by the Worker — unspoofable), shared-by-default with an optional `private` flag. `add_store_note(slug, body, tags?, private?)` SHALL append a note; `read_store_notes(slug)` SHALL return the caller's own private notes plus every member's shared notes, attributed — mirroring `read_recipe_notes`. Store notes SHALL be the home of **both** freeform observations ("fish counter closes at 6 PM", "they have the Kerrygold I like") **and** store **layout**, captured by tag convention: `layout` (an aisle and its sections, led by the aisle number where one exists — the order of layout notes by aisle number is the walk path), `location` (where a non-obvious item hides), and `stock` (a not-carried entry). An author MAY edit or delete their **own** store notes via `update_store_note(slug, created_at, body?, tags?, private?)` and `remove_store_note(slug, created_at)`, addressing a note by its `created_at`; these SHALL operate only on the caller's own notes (matched by `author`) and SHALL NOT touch another tenant's notes. When two notes conflict (e.g. an aisle after a remodel), a reader SHALL prefer the most recent by `created_at`.
+The system SHALL store store notes as rows in the D1 `store_notes` table, authored by the writing tenant (the `author` column, set by the Worker — unspoofable), shared-by-default with an optional `private` flag. `add_store_note(slug, body, tags?, private?)` SHALL append a note and is the **only** store-note MCP tool — reading a store's notes and editing/removing one's own notes are member-app surfaces over the same shared note operations (`update`/`remove` remain author-scoped: matched by `author`, never touching another tenant's notes). Store notes SHALL be the home of **both** freeform observations ("fish counter closes at 6 PM", "they have the Kerrygold I like") **and** store **layout**, captured by tag convention: `layout` (an aisle and its sections, led by the aisle number where one exists — the order of layout notes by aisle number is the walk path), `location` (where a non-obvious item hides), and `stock` (a not-carried entry). The read operation SHALL return the caller's own private notes plus every member's shared notes, attributed — mirroring the recipe-notes visibility rule. When two notes conflict (e.g. an aisle after a remodel), a reader SHALL prefer the most recent by `created_at`.
 
 #### Scenario: Layout captured as a tagged note
 
-- **WHEN** the agent records "Aisle 7: baking, spices, oils" during mapping
-- **THEN** it is stored as a `layout`-tagged store note and surfaces via `read_store_notes` for every member, ordered into the walk path by its aisle number
-
-#### Scenario: Shared note is group-visible
-
-- **WHEN** a member adds a non-private note "fish counter closes at 6 PM"
-- **THEN** `read_store_notes` returns it, attributed to its author, for every member
+- **WHEN** the agent records "Aisle 7: baking, spices, oils" via `add_store_note` during mapping
+- **THEN** it is stored as a `layout`-tagged store note and surfaces through the shared read for every member, ordered into the walk path by its aisle number
 
 #### Scenario: Private note is owner-only
 
 - **WHEN** a member adds a note with `private: true`
 - **THEN** it is returned only to its author and never surfaced to other members
 
-#### Scenario: Author corrects their own stale note
+#### Scenario: Author corrects their own stale note from the member app
 
-- **WHEN** the author of a `layout` note calls `update_store_note` (or `remove_store_note`) with that note's `created_at`
-- **THEN** the note row is patched (or removed) in D1, touching no other tenant's notes
+- **WHEN** the author of a `layout` note edits or removes it (addressed by `created_at`) on the member store surface
+- **THEN** the note row is patched or removed in D1 (scoped to `author = caller`), touching no other tenant's notes
 
-#### Scenario: Another tenant's note is not addressable
+#### Scenario: Note maintenance has no member chat tools
 
-- **WHEN** a member calls `remove_store_note` / `update_store_note` with a `created_at` that matches only another tenant's note
-- **THEN** the operation is a structured no-op / `not_found` and that note is unchanged
-
-#### Scenario: Recency wins on conflict
-
-- **WHEN** two non-private `layout` notes describe the same aisle differently
-- **THEN** the agent treats the more recent (`created_at`) as current
+- **WHEN** the member MCP tool surface is enumerated
+- **THEN** `add_store_note` is the only store-note tool; reads and edit/remove live on the member surfaces over the same operations
 
 ### Requirement: Fulfillment mode and preferred store
 
@@ -88,30 +78,6 @@ The system SHALL store store notes as rows in the D1 `store_notes` table, author
 
 - **WHEN** the standing `primary` is `kroger` but the user says "I'm going to the West 7th Tom Thumb, give me a list"
 - **THEN** the agent builds an in-store list for that store and does not change the stored `primary`
-
-### Requirement: Ready-to-eat adds before grouping (configured catalog)
-
-Before grouping the shopping list, if the user has a configured ready-to-eat catalog, the agent SHALL surface heat-and-eat items for buy-time addition — never adding unilaterally. Two passes:
-
-1. **Restock favorites** (any grocery trip). Cross-reference `retrospective`'s `ready_to_eat_favorites` against pantry on-hand; for a favored item that is low or out, suggest a restock ("you're low on the frozen lasagna you keep grabbing — want it on the list?"). On agreement, add to the grocery list so it falls into the grouping step.
-2. **On-sale discovery** (Kroger store trips only — needs flyer data). If this trip is to a Kroger store, scan `kroger_flyer` for on-sale heat-and-eat / grab-and-go items not already in the member's catalog, and draft 1–2 worthwhile candidates via `add_draft_ready_to_eat` (`source: "kroger-flyer"`). For a non-Kroger store there is no flyer — skip discovery.
-
-Both passes SHALL be skipped for an empty catalog. Items added here are included in the grouped list.
-
-#### Scenario: Favored but low RTE item is suggested at trip time
-
-- **WHEN** `retrospective` shows a ready-to-eat favorite that is low or absent from the pantry before a grocery trip
-- **THEN** the agent suggests adding it to the list, and adds it only on the user's agreement
-
-#### Scenario: On-sale RTE discovery is Kroger-store-only
-
-- **WHEN** the trip is to a non-Kroger store
-- **THEN** the agent does NOT call `kroger_flyer` for on-sale RTE discovery — skip discovery for this trip
-
-#### Scenario: Nothing added without agreement
-
-- **WHEN** the agent surfaces a restock or on-sale RTE suggestion at trip time
-- **THEN** nothing is written to the grocery list until the user says yes
 
 ### Requirement: Aisle-ordered shopping list with graceful degradation
 
@@ -235,13 +201,15 @@ The member store walk, member Log a manual shop action, and agent voice walk SHA
 
 ### Requirement: Offline stores reuse the shared registry and private nickname boundary
 
-The product SHALL call existing generic non-connected store rows **Offline stores** while retaining the stable `list_stores`/`read_store`/CRUD and store-note tool names. Offline adapter/card/launcher identity SHALL come only from grocery-domain rows in the existing shared `stores` registry; no adapter or duplicate store table SHALL be created. Shared `name`/`label`/address SHALL remain public store identity. A household nickname SHALL live only in conditional household preferences and SHALL never update shared identity.
+The product SHALL call existing generic non-connected store rows **Offline stores** while retaining the shared store registry and note operations as the single backing model. Offline adapter/card/launcher identity SHALL come only from grocery-domain rows in the existing shared `stores` registry; no adapter or duplicate store table SHALL be created. Shared `name`/`label`/address SHALL remain public store identity. A household nickname SHALL live only in conditional household preferences and SHALL never update shared identity.
 
 #### Scenario: Offline presentation is a rename
+
 - **WHEN** an existing generic grocery store is shown in Preferences or the Grocery launcher
 - **THEN** it appears as an Offline store backed by the same slug/registry row and no copy is created
 
 #### Scenario: Nickname stays household-private
+
 - **WHEN** one household nicknames a shared store "The big Kroger"
 - **THEN** only that household's projection uses the nickname and the shared store name/label seen by others is unchanged
 

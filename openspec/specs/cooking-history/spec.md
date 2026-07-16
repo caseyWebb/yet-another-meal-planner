@@ -5,7 +5,7 @@ TBD - created by archiving change cooking-log-and-retrospection. Update Purpose 
 ## Requirements
 ### Requirement: Durable cooking log, not an eating log
 
-The system SHALL maintain the per-tenant cooking log as rows in the D1 `cooking_log` table (`tenant`, `date`, `type`, `recipe`, `name`, `protein`, `cuisine`, `meal`) — a durable, append-only record of **cooking events and at-home convenience meals**, not everything eaten. Each row SHALL carry a `date` (ISO date, required) and a `type` (required, one of `recipe`, `ready_to_eat`, `ad_hoc`), and MAY carry a **`meal`** — a nullable closed-set value `breakfast | lunch | dinner | project`, where NULL means "unknown / not a meal" (stories/02 Q2: there is no fourth "other" enum value — `type` and `meal` are orthogonal axes; a baked loaf logs `{ type: 'ad_hoc', meal: null }`). Rows that predate the meal dimension keep `meal` NULL — the migration never fabricates a meal. A row with `type = recipe` SHALL carry a `recipe` slug (a soft reference to `recipes.slug`, no foreign-key constraint — history survives a recipe's removal) and SHALL NOT duplicate the recipe's protein/cuisine inline (those are looked up from the `recipes` table at read time). A row with `type = ready_to_eat` or `ad_hoc` SHALL carry a `name` and MAY carry inline `protein` / `cuisine` dimensions so it still contributes to mix aggregates. The system SHALL NOT log eating out, and SHALL NOT re-log leftovers of an already-logged cook (one cook that feeds multiple meals is one entry). The log SHALL NOT contain planned-but-not-yet-cooked meals; planned intent lives in the D1 `meal_plan` table.
+The system SHALL maintain the per-tenant cooking log as rows in the D1 `cooking_log` table (`tenant`, `date`, `type`, `recipe`, `name`, `protein`, `cuisine`, `meal`) — a durable, append-only record of **cooking events**, not everything eaten. Each row SHALL carry a `date` (ISO date, required) and a `type` (required; new rows are one of `recipe`, `ad_hoc`), and MAY carry a **`meal`** — a nullable closed-set value `breakfast | lunch | dinner | project`, where NULL means "unknown / not a meal" (stories/02 Q2: there is no fourth "other" enum value — `type` and `meal` are orthogonal axes; a baked loaf logs `{ type: 'ad_hoc', meal: null }`). Rows that predate the meal dimension keep `meal` NULL — the migration never fabricates a meal. **Historical rows stored with the retired `type = 'ready_to_eat'` keep their stored type** — no backfill or re-typing — and every read SHALL handle them without error, treating them exactly as before the type's retirement (excluded from cook counts; inline dimensions contribute to mixes). A row with `type = recipe` SHALL carry a `recipe` slug (a soft reference to `recipes.slug`, no foreign-key constraint — history survives a recipe's removal) and SHALL NOT duplicate the recipe's protein/cuisine inline (those are looked up from the `recipes` table at read time). A non-`recipe` row SHALL carry a `name` and MAY carry inline `protein` / `cuisine` dimensions so it still contributes to mix aggregates. The system SHALL NOT log eating out, and SHALL NOT re-log leftovers of an already-logged cook (one cook that feeds multiple meals is one entry). The log SHALL NOT contain planned-but-not-yet-cooked meals; planned intent lives in the D1 `meal_plan` table.
 
 #### Scenario: Recipe cook appends a slug row with its meal
 
@@ -27,10 +27,10 @@ The system SHALL maintain the per-tenant cooking log as rows in the D1 `cooking_
 - **WHEN** the user mentions eating at a restaurant
 - **THEN** no `cooking_log` row is appended
 
-#### Scenario: Ready-to-eat consumption decrements pantry and records a favorite
+#### Scenario: Historical ready_to_eat rows are preserved and never break a read
 
-- **WHEN** the user says they ate a ready-to-eat item (e.g. "I had the frozen lasagna")
-- **THEN** a `type = ready_to_eat` row is inserted and that item's on-hand stock in the D1 `pantry` table is decremented, and the row contributes to the item's favored-frequency signal
+- **WHEN** a caller's log contains rows stored with the retired `type = 'ready_to_eat'` and any log read (retrospective, the member log page, insights) runs
+- **THEN** the rows keep their stored type, the read completes without error, and each row is treated as it was before the retirement — excluded from cook counts, inline dimensions contributing to mixes
 
 ### Requirement: `last_cooked` is derived from the log
 
@@ -53,7 +53,7 @@ The system SHALL treat a recipe's `last_cooked` as a value **derived by query**,
 
 ### Requirement: Cook-capture appends to D1 via log_cooked
 
-The system SHALL provide a cook-capture path via the `log_cooked` tool, which appends one cooking event to the caller's `cooking_log` table and returns without a `commit_sha`. It SHALL accept an optional **`meal`** (`breakfast | lunch | dinner | project`; omitted stores NULL, valid on all `type`s — cooking a planned project logs `{ type: 'recipe', meal: 'project' }`) and an optional **`plan_row_id`** addressing the exact plan row to clear. It SHALL validate the entry at write time (an ISO `date` defaulting to today; a `type` in {`recipe`, `ready_to_eat`, `ad_hoc`}; a `recipe` entry's slug resolved against the D1 `recipes` table; a non-recipe entry requires `name`) — an unresolved slug is a structured `not_found` error written nowhere, and a missing required field is a `validation_failed` error. For a `recipe` entry it SHALL clear **at most one** matching `meal_plan` row per the deterministic clear order (the dedicated requirement below), in the **same D1 transaction** as the cooking-log insert, returning `cleared_plan_row?: { id, recipe, meal, planned_for }` additively. Route-level idempotent dedupe identity SHALL be **per-`(date, meal, type, recipe|name)`**, where a NULL `meal` matches NULL only — this is cooking_log **dedupe identity only, never plan-row identity**. Any pantry decrements the user confirms are applied via `update_pantry`. The build SHALL NOT validate the cooking log (it is no longer in GitHub). The agent SHALL NOT claim a meal was logged that the user did not assert.
+The system SHALL provide a cook-capture path via the `log_cooked` tool, which appends one cooking event to the caller's `cooking_log` table and returns without a `commit_sha`. It SHALL accept an optional **`meal`** (`breakfast | lunch | dinner | project`; omitted stores NULL, valid on all `type`s — cooking a planned project logs `{ type: 'recipe', meal: 'project' }`) and an optional **`plan_row_id`** addressing the exact plan row to clear. It SHALL validate the entry at write time (an ISO `date` defaulting to today; a `type` in {`recipe`, `ad_hoc`}; a `recipe` entry's slug resolved against the D1 `recipes` table; an `ad_hoc` entry requires `name`) — an unresolved slug is a structured `not_found` error written nowhere, and a missing required field is a `validation_failed` error. For **one deprecation window**, a stale plugin's `type: "ready_to_eat"` SHALL be accepted and converted to `type: "ad_hoc"` — `name`, `date`, `meal`, and inline dimensions carried over, the stored row `ad_hoc`, the success return carrying `warnings: [{ key: "type", reason: "retired", superseded_by: "ad_hoc" }]`; the dedupe identity and plan-clear logic operate on the converted form. After the window, `type: "ready_to_eat"` SHALL be rejected as `validation_failed` like any unknown type. For a `recipe` entry it SHALL clear **at most one** matching `meal_plan` row per the deterministic clear order (the dedicated requirement below), in the **same D1 transaction** as the cooking-log insert, returning `cleared_plan_row?: { id, recipe, meal, planned_for }` additively. Route-level idempotent dedupe identity SHALL be **per-`(date, meal, type, recipe|name)`**, where a NULL `meal` matches NULL only — this is cooking_log **dedupe identity only, never plan-row identity**. Any pantry decrements the user confirms are applied via `update_pantry`. The build SHALL NOT validate the cooking log (it is no longer in GitHub). The agent SHALL NOT claim a meal was logged that the user did not assert.
 
 #### Scenario: Recipe entry with a real slug is logged and clears one row atomically
 
@@ -64,6 +64,11 @@ The system SHALL provide a cook-capture path via the `log_cooked` tool, which ap
 
 - **WHEN** `log_cooked({ type: "recipe", recipe: "not-a-recipe" })` is called and no such slug exists
 - **THEN** a structured `not_found` error is returned and nothing is written
+
+#### Scenario: A stale ready_to_eat write converts to ad_hoc during the window
+
+- **WHEN** a stale plugin calls `log_cooked({ type: "ready_to_eat", name: "frozen lasagna", meal: "dinner" })` during the deprecation window
+- **THEN** the stored row is `{ type: 'ad_hoc', name: 'frozen lasagna', meal: 'dinner' }`, the write succeeds, the return carries the `warnings` conversion entry, and a replay of the same call dedupes against the converted `(date, meal, 'ad_hoc', name)` identity
 
 #### Scenario: Unplanned cook still logs
 
@@ -77,9 +82,9 @@ The system SHALL provide a cook-capture path via the `log_cooked` tool, which ap
 
 ### Requirement: Retrospective over real cooking history
 
-The system SHALL provide a `retrospective(period)` tool that aggregates the caller's `cooking_log` rows over the requested period, resolving each `type = recipe` row's protein/cuisine from the D1 `recipes` table (a `cooking_log LEFT JOIN recipes`) and each non-recipe row's dimensions from its inline columns. It SHALL return `recipes_cooked` (cooks in the window), `protein_mix` and `cuisine_mix` (counts by dimension over the window, including inline dimensions from non-recipe rows; rows lacking a dimension bucket under `unknown`), a **meal-aware cadence** measure — the overall `cooks_per_week` (definition unchanged: cooks per week over the period, counting `recipe` + `ad_hoc` only — `ready_to_eat` is not cooking), plus **`by_meal: { breakfast, lunch, dinner, project }`** over rows whose `meal` is set and **`meal_unknown: N`** counting NULL-meal rows (pre-migration rows are counted in the overall figure, reported unknown, never fabricated) — a **cook-vs-convenience** breakdown (cooked = `recipe` + `ad_hoc` vs convenience = `ready_to_eat`), **`ready_to_eat_favorites`** (ready-to-eat names frequency-ranked over the period), and **`underused`** with its companion **`underused_count`** (defined below). An empty log SHALL return an empty result with no error.
+The system SHALL provide a `retrospective(period)` tool that aggregates the caller's `cooking_log` rows over the requested period, resolving each `type = recipe` row's protein/cuisine from the D1 `recipes` table (a `cooking_log LEFT JOIN recipes`) and each non-recipe row's dimensions from its inline columns. It SHALL return `recipes_cooked` (cooks in the window), `protein_mix` and `cuisine_mix` (counts by dimension over the window, including inline dimensions from non-recipe rows — historical `ready_to_eat` rows included; rows lacking a dimension bucket under `unknown`), a **meal-aware cadence** measure — the overall `cooks_per_week` (definition unchanged: cooks per week over the period, counting stored `recipe` + `ad_hoc` rows only — historical `ready_to_eat` rows remain excluded, exactly as before the type's retirement), plus **`by_meal: { breakfast, lunch, dinner, project }`** over rows whose `meal` is set and **`meal_unknown: N`** counting NULL-meal rows (pre-migration rows are counted in the overall figure, reported unknown, never fabricated) — and **`underused`** with its companion **`underused_count`** (defined below). The return SHALL NOT include a `cook_vs_convenience` breakdown or a `ready_to_eat_favorites` list — both are removed with the ready-to-eat concept, with no empty-shell placeholder keys. A log containing historical `ready_to_eat` rows SHALL aggregate without error. An empty log SHALL return an empty result with no error.
 
-The `period` argument SHALL scope only `recipes_cooked`, `protein_mix`, `cuisine_mix`, cadence (including `by_meal` and `meal_unknown`), cook-vs-convenience, and `ready_to_eat_favorites`. `underused` SHALL be **independent of `period`** and SHALL surface **loved recipes that have gone quiet and are in season** — not "every recipe not cooked in the window." A recipe SHALL qualify as `underused` WHEN all of the following hold:
+The `period` argument SHALL scope only `recipes_cooked`, `protein_mix`, `cuisine_mix`, and cadence (including `by_meal` and `meal_unknown`). `underused` SHALL be **independent of `period`** and SHALL surface **loved recipes that have gone quiet and are in season** — not "every recipe not cooked in the window." A recipe SHALL qualify as `underused` WHEN all of the following hold:
 
 - **loved** — the caller has favorited it (declared preference), OR has cooked it (`type = recipe`) **at least 3 times within the trailing 12 months** ending at `now` (revealed preference);
 - **stale** — its derived `last_cooked` is `null` (never cooked) or strictly older than a **fixed 30-day** window ending at `now`;
@@ -108,15 +113,10 @@ Each `underused` item SHALL carry `slug`, `title`, `last_cooked`, `why` (`"favor
 - **WHEN** the caller has no `cooking_log` rows
 - **THEN** `retrospective` returns an empty result (including an empty `underused` and `underused_count: 0`) with no error
 
-#### Scenario: Cadence counts cooking, not convenience
+#### Scenario: Historical ready_to_eat rows aggregate as before, without RTE fields
 
-- **WHEN** the period contains both `recipe`/`ad_hoc` and `ready_to_eat` entries
-- **THEN** cadence counts only the `recipe` and `ad_hoc` entries, while cook-vs-convenience reports both sides
-
-#### Scenario: Ready-to-eat favorites are frequency-ranked
-
-- **WHEN** the period contains repeated `ready_to_eat` entries for the same item
-- **THEN** `ready_to_eat_favorites` ranks that item by how often it appears
+- **WHEN** the period contains `recipe` and `ad_hoc` entries alongside historical rows stored with `type = 'ready_to_eat'`
+- **THEN** cadence counts only the `recipe` and `ad_hoc` entries (the historical rows stay excluded, as before the retirement), the historical rows' inline dimensions still contribute to `protein_mix`/`cuisine_mix`, the result contains no `cook_vs_convenience` or `ready_to_eat_favorites` key, and no error occurs
 
 #### Scenario: A stale favorite is underused
 
@@ -157,20 +157,6 @@ Each `underused` item SHALL carry `slug`, `title`, `last_cooked`, `why` (`"favor
 
 - **WHEN** more than 15 loved, stale, in-season recipes qualify
 - **THEN** `underused` returns the 15 stalest items and `underused_count` reports the full qualifying total
-
-### Requirement: Ready-to-eat acquisition is cross-recorded at inventory capture
-
-Ready-to-eat consumption decrements on-hand stock in the D1 `pantry` table (the caller's ready-to-eat catalog is options-only), so the on-hand view is only correct if acquisition records the same stock. Whenever the agent records physical inventory **outside onboarding** — notably the standalone `update_pantry` flow (e.g. a freezer haul of frozen dinners) — and the items named are heat-and-eat items, the agent SHALL record their on-hand stock via `update_pantry` AND SHALL **offer** to add them to the caller's ready-to-eat catalog via `add_draft_ready_to_eat` (`status: active`) when they are not already cataloged, using a consistent `name` so the favorites↔pantry-on-hand restock cross-reference matches. It SHALL offer rather than silently catalog (consistent with the persona's don't-auto-add stance) and SHALL require no new MCP tool. (The onboarding capture points are covered by the guided-onboarding capability.)
-
-#### Scenario: Ad-hoc freezer haul of heat-and-eat items is offered for cataloging
-
-- **WHEN** the member says they just stocked the freezer with several frozen dinners via the pantry-update flow
-- **THEN** the agent records them as pantry on-hand stock via `update_pantry` and offers to add the ones not already in the catalog via `add_draft_ready_to_eat`, under the same name used in the pantry
-
-#### Scenario: Already-cataloged item only updates stock
-
-- **WHEN** a heat-and-eat item the member restocks is already an `active` entry in their ready-to-eat catalog
-- **THEN** the agent records the on-hand stock via `update_pantry` and does not re-add a duplicate catalog entry
 
 ### Requirement: Vibe satisfaction provenance on cooks
 

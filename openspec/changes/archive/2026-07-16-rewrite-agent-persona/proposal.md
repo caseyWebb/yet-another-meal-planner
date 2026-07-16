@@ -39,9 +39,7 @@ Three posture changes, all user-ratified:
 - `guided-onboarding` — `configure-yamp-profile` becomes the slimmed `setup` skill; inventory, bulk-buy watchlist, and discovery-source seeding requirements removed; the browse surface is the member web app.
 - `guided-cook` — the `cooked` flow dissolves into `cook`; completion logs in-flow instead of handing off; pre-flight equipment saves route through `update_pantry`'s kitchen ops.
 - `recipe-sides` — the standalone flow and the import-recipe handoff are removed; the side-resolution ladder and its propose-then-confirm gate re-home into the `plan` skill; plating-edge (`pairs_with`) authorship pauses with `update_recipe`'s removal.
-- `cooking-techniques` — the member capture flow (save-technique) is removed; operator curates via admin. Cook-time surfacing stays.
-- `purchasing-guidance` — the member capture flow (save-buying-guide) is removed; operator curates via admin. Shop-time surfacing stays.
-- `agent-bug-reporting` — the skill renames `report-yamp-bug` → `report-bug`; behavior unchanged.
+- `agent-bug-reporting` — the skill renames `report-yamp-bug` → `report-bug`; behavior unchanged. (The cooking-techniques / purchasing-guidance capture-flow requirement removals ride `narrow-mcp-surface`'s deltas — this change only removes the corresponding skills from the persona source.)
 
 ## Impact
 

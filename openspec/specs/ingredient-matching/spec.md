@@ -6,7 +6,7 @@ Defines the deterministic ingredient-to-Kroger-SKU matching pipeline (`match_ing
 ## Requirements
 ### Requirement: Resolve-only matching pipeline
 
-The system SHALL provide `match_ingredient_to_kroger_sku(ingredient, context)` running the deterministic 7-step pipeline from `docs/ARCHITECTURE.md`. It SHALL be **resolve-only**: it returns a result but SHALL NOT write the D1 `sku_cache` table (that write is deferred to the order path via `place_order`). It SHALL return exactly one of three shapes — a confident match, an `ambiguous` result with narrowed candidates, or an `unavailable` result.
+The system SHALL provide the deterministic 7-step matching pipeline from `docs/ARCHITECTURE.md` as an internal operation (`matchIngredient`) consumed by the order flow (`place_order`'s resolution) and the order-review surfaces — it is **not** a model-advertised MCP tool. It SHALL be **resolve-only**: it returns a result but SHALL NOT write the D1 `sku_cache` table (that write is deferred to the order path via `place_order`). It SHALL return exactly one of three shapes — a confident match, an `ambiguous` result with narrowed candidates, or an `unavailable` result.
 
 #### Scenario: Confident match returned
 
@@ -16,12 +16,17 @@ The system SHALL provide `match_ingredient_to_kroger_sku(ingredient, context)` r
 #### Scenario: Ambiguous result returned
 
 - **WHEN** deterministic narrowing leaves no confident pick
-- **THEN** it returns `{ resolved: false, ambiguous: true, candidates: [...], reason }` for the LLM to resolve
+- **THEN** it returns `{ resolved: false, ambiguous: true, candidates: [...], reason }` for the consuming surface (the order checkpoint / review widget) to resolve
 
 #### Scenario: Unavailable result returned
 
 - **WHEN** no candidate is fulfillable via curbside or delivery at the resolved location
 - **THEN** it returns `{ resolved: false, reason: "unavailable" }` and does not substitute
+
+#### Scenario: The matcher is not a model tool
+
+- **WHEN** a member connector's tool list is enumerated
+- **THEN** `match_ingredient_to_kroger_sku` does not appear; ingredient resolution reaches the model only through `place_order`'s checkpoint reporting and the review widget's app ops
 
 ### Requirement: Tri-state brand-preference confidence
 
@@ -138,11 +143,11 @@ The system SHALL normalize the ingredient by stripping a leading quantity/unit, 
 
 ### Requirement: compare_unit_price deterministic comparison
 
-The system SHALL provide `compare_unit_price(items)` performing deterministic price-per-unit comparison from raw `price` and `size` strings. It SHALL parse, convert, and divide internally so the LLM never performs arithmetic. It SHALL rank only within a single dimension (volume, weight, or count) and SHALL place cross-dimension or unparseable items in `incomparable`. A size SHALL be treated as unparseable — and routed to `incomparable` — whenever its computed base-unit quantity is not a finite positive number (zero, negative, or non-finite), including via a zero/`Infinity` multi-pack multiplier, a divide-by-zero fraction (`"1/0"`), or a `quantity_override` of `0`; such a size SHALL NOT yield a zero or non-finite `unit_price` that could sort as `cheapest`. A `price` string that is ambiguous to parse (more than one decimal point, or a decimal comma) SHALL parse to no value rather than a silently mis-scaled number. It SHALL accept optional `quantity_override`/`unit_override` for residue the parser could not handle. The same core SHALL drive the matcher's tiebreaker.
+The system SHALL provide the deterministic price-per-unit comparison core (`compareUnitPrice`) as an internal operation — it drives the matcher's tiebreaker, the substitution/order-review ranking, and any surface presenting comparable candidates; it is **not** a model-advertised MCP tool, so no LLM performs the arithmetic anywhere. It SHALL parse, convert, and divide internally, rank only within a single dimension (volume, weight, or count), and place cross-dimension or unparseable items in `incomparable`. A size SHALL be treated as unparseable — and routed to `incomparable` — whenever its computed base-unit quantity is not a finite positive number (zero, negative, or non-finite), including via a zero/`Infinity` multi-pack multiplier, a divide-by-zero fraction (`"1/0"`), or a `quantity_override` of `0`; such a size SHALL NOT yield a zero or non-finite `unit_price` that could sort as `cheapest`. A `price` string that is ambiguous to parse (more than one decimal point, or a decimal comma) SHALL parse to no value rather than a silently mis-scaled number. It SHALL accept optional `quantity_override`/`unit_override` for residue the parser could not handle.
 
 #### Scenario: Ranked within a dimension
 
-- **WHEN** `compare_unit_price` receives same-dimension items with parseable sizes
+- **WHEN** the core receives same-dimension items with parseable sizes
 - **THEN** it returns them ranked by ascending unit price with a `cheapest` id
 
 #### Scenario: Cross-dimension and unparseable excluded

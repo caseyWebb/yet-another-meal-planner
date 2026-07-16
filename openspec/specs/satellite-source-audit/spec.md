@@ -128,22 +128,6 @@ being strictly outbound-only (the Worker cannot stop the satellite at its source
 - **WHEN** the operator clears a source's quarantine flag
 - **THEN** the source's next observation is validated and accepted normally, with no residual block
 
-### Requirement: The rejection ledger and quarantine state are readable by the agent
-
-The Worker SHALL expose an agent-readable read tool over the rejection ledger and the current
-quarantine state (modeled on the `read_reconcile_errors` precedent), returning the recent rejections
-(`kind`, `source`, `origin`, `reason`, `provenance`, `count`, `rejected_at`) and the currently
-quarantined sources, bounded and most-recent-first. The tool SHALL reflect only **rejected**
-observations — an accepted observation SHALL never appear — so the agent can explain to a member why
-a satellite's contributions are not landing and relay the specific defect.
-
-#### Scenario: The agent explains why contributions are not landing
-
-- **WHEN** a member reports that recipes (or sales) from their satellite are not showing up
-- **THEN** the agent reads the ledger and relays the specific per-source defect (e.g. "that source
-  had 12 `contract_invalid` rejects in the last day — its adapter likely broke"), rather than
-  guessing
-
 ### Requirement: The audit checks operational health only, not store-claim ground truth
 
 The source audit SHALL check a satellite's **operational health** — breakage such as a changed DOM,
@@ -167,4 +151,18 @@ security boundary.
 - **WHEN** a source's adapter breaks and floods malformed or judgment-smuggling data
 - **THEN** the audit surfaces it through the ledger, the rising fail-rate, and the quarantine
   recommendation — none of which require a ground truth — so the operator can act
+
+### Requirement: The rejection ledger and quarantine state are readable by the operator
+
+The rejection ledger and the current quarantine state SHALL be readable from the **operator admin surface** — the recent rejections (`kind`, `source`, `origin`, `reason`, `provenance`, `count`, `rejected_at`) and the currently quarantined sources, bounded and most-recent-first. The read SHALL reflect only **rejected** observations — an accepted observation SHALL never appear — so the operator can explain why a satellite's contributions are not landing and relay the specific defect. The visibility rule is unchanged: recipe and sale rejections/quarantines are operator-global, while `order`-kind rows remain private to their member and are surfaced only to that member's surfaces, never listed to another member.
+
+#### Scenario: The operator diagnoses why contributions are not landing
+
+- **WHEN** a member reports that recipes (or sales) from their satellite are not showing up
+- **THEN** the operator reads the ledger in the admin surface and relays the specific per-source defect (e.g. "that source had 12 `contract_invalid` rejects in the last day — its adapter likely broke"), rather than guessing
+
+#### Scenario: Accepted observations never appear
+
+- **WHEN** a satellite's recent observations all validated cleanly
+- **THEN** the ledger shows no entries for it — an empty rejection list means everything landed
 

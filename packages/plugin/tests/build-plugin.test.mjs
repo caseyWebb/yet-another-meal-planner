@@ -120,7 +120,7 @@ test('renderWorkflowSkill prepends the loader and does NOT inline tier content',
   assert.doesNotMatch(md, /user-invocable/);
 });
 
-test('renderLibrarySkill emits a grocery-<tier> skill with a near-empty description', () => {
+test('renderLibrarySkill emits a yamp-<tier> library skill with a near-empty description', () => {
   const md = renderLibrarySkill('cart', parseInstructions(DOC).persona.cart);
   assert.match(md, /^---\nname: yamp-cart\ndescription: "/);
   assert.match(md, /Not invoked on its own/);

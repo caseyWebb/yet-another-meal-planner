@@ -84,20 +84,6 @@ When a member has too little cooking history or too few favorites to cluster mea
 - **WHEN** a member has neither meaningful history nor taste text
 - **THEN** derivation proposes nothing (no fabricated archetypes), and the surface reports the palette is empty
 
-### Requirement: On-demand and scheduled derivation, bounded
-
-The system SHALL expose an on-demand `suggest_meal_vibes` tool (with `suggest_night_vibes` as a deprecation-window dispatch alias) that runs derivation for the caller and returns candidate archetypes (as proposals) so the onboarding / retrospective flow can seed or grow a palette immediately; it SHALL be read-with-respect-to-the-palette (it enqueues proposals; it never writes the palette table). The system SHALL also run derivation as a **scheduled generative reconcile pass** (the pluggable `edge` producer of `profile-reconciliation`), enqueuing new archetypes into `pending_proposals` under a **per-run cap** so a member is never flooded, and recording job health like the other background jobs. These two — the cron and the agent-mediated tool — are the only derivation producers; the agent-mediated tool path is not throttle-gated (agent judgment mediates its use).
-
-#### Scenario: Onboarding seeds a palette on demand
-
-- **WHEN** the onboarding flow calls `suggest_meal_vibes` for a new member
-- **THEN** it returns candidate archetypes as proposals without writing the palette
-
-#### Scenario: The scheduled pass is bounded per member
-
-- **WHEN** the generative reconcile pass would derive many new archetypes for one member in a single run
-- **THEN** it enqueues at most the per-run cap and records the run's health, deferring the rest to a later tick
-
 ### Requirement: Derivation runs converge near-duplicate pending suggestions
 
 Each derivation run (the tool and the scheduled pass — one shared core) SHALL first converge the member's existing **pending** `add_vibe` proposals, so redundancy that has already accumulated heals organically through the pipeline: iterating pending proposals in ascending `(created_at, id)` order, a proposal whose phrase is within the shared threshold — under the **`(meal, phrase-space)`** convergence key, with a proposal lacking `meal` treated as `dinner` — of (a) a palette vibe of that meal, (b) a rejected `add_vibe` proposal of that meal, or (c) an earlier surviving pending proposal of that meal SHALL be resolved as **superseded**; otherwise it survives as its group's **representative**. The representative of a near-duplicate pending group is therefore the **earliest-created** proposal (ties broken by lowest id), making convergence deterministic and idempotent — a rerun over converged state changes nothing. The sweep SHALL run even when the pass derives no new candidates, SHALL only ever resolve rows whose status is `pending` (member-resolved rows — accepted or rejected — are never modified), and SHALL report the number superseded in the run's result and the scheduled job's health summary.
@@ -121,4 +107,23 @@ Each derivation run (the tool and the scheduled pass — one shared core) SHALL 
 
 - **WHEN** the sweep runs twice over the same queue state
 - **THEN** the second run supersedes nothing further and the same representatives remain pending
+
+### Requirement: Scheduled derivation is the sole producer, bounded
+
+The system SHALL run archetype derivation as a **scheduled generative reconcile pass** (the pluggable `edge` producer of `profile-reconciliation`), enqueuing new archetypes into `pending_proposals` under a **per-run cap** so a member is never flooded, and recording job health like the other background jobs. The cron SHALL be the sole derivation producer: there is no member-facing `suggest_meal_vibes` MCP tool (nor its `suggest_night_vibes` alias) and no member-tappable suggest trigger (the retired `/api/vibes/suggest` stub is owned by `remove-meal-dimension-shims`). Derivation output still reaches the member as proposals — confirmed from the member app's reconciliation queue — and the pass SHALL remain read-with-respect-to-the-palette (it enqueues proposals; it never writes the palette table). The derivation internals (clustering, naming, `(meal, phrase-space)` dedup, pending-near-duplicate convergence, cold-start starters) are unchanged.
+
+#### Scenario: The scheduled pass is bounded per member
+
+- **WHEN** the generative reconcile pass would derive many new archetypes for one member in a single run
+- **THEN** it enqueues at most the per-run cap and records the run's health, deferring the rest to a later tick
+
+#### Scenario: A new member's palette seeds from the cron, not a tool
+
+- **WHEN** a new member accrues favorites/cook history (or taste notes, cold-start) and the scheduled pass runs
+- **THEN** candidate archetypes land as pending proposals for the member to confirm, with no on-demand derivation tool involved
+
+#### Scenario: Derivation never writes the palette
+
+- **WHEN** the pass produces candidates
+- **THEN** only `pending_proposals` rows are written; the palette table changes only when the member accepts a proposal
 

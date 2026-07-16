@@ -3,12 +3,10 @@
 ## Purpose
 
 Defines the per-tenant "don't run out of these" staples list: the data model (D1 `staples` table), the agent-facing tool (`update_staples`), how to read the list (via `read_user_profile().staples`, a bare `StaplesItem[]` array), and the three behavioral flows that key on it — pantry-depletion restock prompting, meal-plan restocking callout, and perishable-staleness nudge. Staples are orthogonal to the bulk-buy watchlist (D1 `stockup` table): an item can appear in both (availability-driven always-on-hand vs. price-opportunism bulk-buy), and they fire at different moments for different reasons.
-
 ## Requirements
-
 ### Requirement: Staples list is a per-tenant curated opt-in catalog
 
-The system SHALL maintain a per-tenant staples list in the D1 `staples` table that stores the member's "don't run out of these" items. Each item SHALL have a required `name` field and an optional `perishable: true` flag. The list SHALL be agent-writable via `update_staples` and is read via the `staples` array on `read_user_profile()` — a bare `StaplesItem[]` (not `{ items: [...] }`). An empty or absent staples list SHALL degrade gracefully — all staples-driven behaviors become no-ops, preserving existing behavior for members who have not set up a list.
+The system SHALL maintain a per-tenant staples list in the D1 `staples` table that stores the member's "don't run out of these" items. Each item SHALL have a required `name` field and an optional `perishable: true` flag. The list SHALL be curated through the member web app over the shared staples write operation (add deduped by normalized `name`; remove silently succeeding when absent) — there is no `update_staples` MCP tool — and is read via the `staples` array on `read_user_profile()`, a bare `StaplesItem[]` (not `{ items: [...] }`). An empty or absent staples list SHALL degrade gracefully — all staples-driven behaviors become no-ops, preserving existing behavior for members who have not set up a list.
 
 #### Scenario: Staples list is present with items
 
@@ -19,6 +17,11 @@ The system SHALL maintain a per-tenant staples list in the D1 `staples` table th
 
 - **WHEN** a member has no rows in their D1 staples table
 - **THEN** `read_user_profile().staples` returns an empty array and all staples-driven prompting behaviors are suppressed (no error, no prompting)
+
+#### Scenario: Curation is a member-app write
+
+- **WHEN** a member adds or removes a staple
+- **THEN** the member app writes through the shared operation (dedup by normalized name, silent absent-remove), and no staples write tool appears on the MCP surface
 
 #### Scenario: Perishable flag is optional
 
@@ -91,3 +94,4 @@ For staples with `perishable: true`, the agent SHALL check the item's `last_veri
 
 - **WHEN** a perishable staple has no pantry row at all
 - **THEN** the agent treats it as stale and includes it in the staleness nudge batch
+

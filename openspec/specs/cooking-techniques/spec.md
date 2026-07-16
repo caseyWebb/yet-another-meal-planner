@@ -22,37 +22,23 @@ The system SHALL host curated guidance corpora under a `guidance/` umbrella at t
 - **WHEN** a guidance tool is called with a domain outside the controlled vocabulary (or one containing path separators / traversal)
 - **THEN** it returns a structured error and reads nothing from disk
 
-### Requirement: Shared, agent-writable cooking-technique corpus
-
-The system SHALL maintain `guidance/cooking_techniques/` as a **shared corpus** read by all tenants, holding general cooking-technique wisdom keyed by **technique slug** (e.g. `browning-meat.md`, `searing.md`, `resting-meat.md`) rather than by recipe or ingredient. Unlike the read-only storage corpus, this corpus SHALL be **agent-writable** with no extra gate (the shared-and-agent-writable posture of `stores`/`feeds`). Each file SHALL carry distilled prose and MAY carry a `description` and a `source` (provenance) frontmatter field. Technique entries SHALL be flat — there is no relational/`_`-prefixed cross-entry file.
-
-#### Scenario: Technique keyed by slug, shared across tenants
-
-- **WHEN** the `guidance/cooking_techniques/` tree is inspected
-- **THEN** files are named for techniques (not recipes or ingredients) and the same file is read by every tenant
-
-#### Scenario: Provenance recorded
-
-- **WHEN** a technique memory is saved from a named source
-- **THEN** the entry records the `source` so the advice is traceable and citable at the stove
-
 ### Requirement: Unified guidance read tools
 
-The system SHALL provide one generic read pair over `guidance/<domain>/`: `list_guidance(domain?)` and `read_guidance(domain, slugs)`. `list_guidance` SHALL return available slugs each with their optional one-line `description` — for a single domain when `domain` is supplied, or for all domains grouped by domain when `domain` is omitted. `read_guidance(domain, slugs)` SHALL return the content of exactly the named entries within that domain. An absent corpus tree SHALL NOT be an error (it yields an empty listing). These tools SHALL replace the prior `list_storage_guidance` / `read_storage_guidance`.
+The system SHALL provide one generic read tool over `guidance/<domain>/`: `read_guidance(domain?, slugs?)`. With `slugs` present it SHALL return the content of exactly the named entries within that domain (a structured `not_found` naming an unknown slug). With `slugs` absent it SHALL return the **listing** — available slugs each with their optional one-line `description` — for the named domain, or for all domains grouped by domain when `domain` is also omitted. An absent corpus tree SHALL NOT be an error (it yields an empty listing); an unknown domain yields a structured `validation_failed`. This single tool SHALL replace the prior `list_guidance` / `read_guidance` pair; for one deprecation window `list_guidance(domain?)` SHALL remain registered as a dispatch alias onto the listing mode (identical responses, no `warnings` injection), after which it falls to the generic unknown-tool rejection.
 
 #### Scenario: List one domain then read on demand
 
-- **WHEN** the agent calls `list_guidance("cooking_techniques")` and then `read_guidance("cooking_techniques", ["browning-meat"])`
-- **THEN** the list returns technique slugs (+ descriptions) and the read returns the content of exactly the named entries
+- **WHEN** the agent calls `read_guidance("cooking_techniques")` and then `read_guidance("cooking_techniques", ["browning-meat"])`
+- **THEN** the first call returns technique slugs (+ descriptions) and the second returns the content of exactly the named entries
 
 #### Scenario: List all domains in one call
 
-- **WHEN** the agent calls `list_guidance()` with no domain
+- **WHEN** the agent calls `read_guidance()` with no domain and no slugs
 - **THEN** it returns the slugs for every domain, grouped by domain
 
 #### Scenario: Absent tree is empty, not an error
 
-- **WHEN** `list_guidance("cooking_techniques")` is called and no `guidance/cooking_techniques/` tree exists yet
+- **WHEN** `read_guidance("cooking_techniques")` is called and no `guidance/cooking_techniques/` tree exists yet
 - **THEN** it returns an empty listing rather than an error
 
 #### Scenario: Unknown slug on read is a structured not_found
@@ -60,47 +46,14 @@ The system SHALL provide one generic read pair over `guidance/<domain>/`: `list_
 - **WHEN** `read_guidance("cooking_techniques", ["no-such-technique"])` is called
 - **THEN** it returns a structured `not_found` naming the slug
 
-### Requirement: Domain-gated guidance write tool with a writable allowlist
+#### Scenario: A stale list call dispatches for one window
 
-The system SHALL provide `save_guidance(domain, slug, content, source?)` that creates or **refines** a single guidance entry. A **writable-domain allowlist** SHALL govern which domains accept writes; `cooking_techniques` and `purchasing` SHALL be on the allowlist and `ingredient_storage` SHALL NOT. A write to a non-allowlisted domain SHALL be rejected with a structured `validation_failed` and SHALL mutate nothing. Saving to an **existing** slug SHALL overwrite/refine that single file (one memory per slug); saving to a **new** slug SHALL create it. The `slug` SHALL be validated as a safe slug (lowercase, hyphen-separated; no path traversal).
-
-#### Scenario: Save a new technique memory
-
-- **WHEN** `save_guidance("cooking_techniques", "browning-meat", <distilled prose>, source)` is called and no such entry exists
-- **THEN** it creates `guidance/cooking_techniques/browning-meat.md` with the prose and recorded source
-
-#### Scenario: Save to the purchasing domain is accepted
-
-- **WHEN** `save_guidance("purchasing", "olive-oil", <distilled prose>, source)` is called
-- **THEN** it creates or refines `guidance/purchasing/olive-oil.md` (the `purchasing` domain is on the writable allowlist)
-
-#### Scenario: Refine an existing technique memory
-
-- **WHEN** `save_guidance` is called for an existing slug
-- **THEN** the single existing file is overwritten with the refined content (no second file is appended)
-
-#### Scenario: Write to a read-only domain is rejected
-
-- **WHEN** `save_guidance("ingredient_storage", …)` is called
-- **THEN** it returns `validation_failed`, writes nothing, and the ingredient-storage corpus is unchanged
-
-### Requirement: Capture flow distills member-supplied sources
-
-The agent SHALL provide a capture flow (a skill) that, when a member posts an article, a URL, or their own distillation of a cooking technique, compresses it to **imperative, non-obvious** guidance and persists it via `save_guidance("cooking_techniques", …)`, recording the `source` when known. The flow SHALL save the distilled essence, not the verbatim article, and SHALL read any existing entry for the slug first and **merge** rather than blindly replace. Fetching a URL SHALL be best-effort (these sources are frequently bot-walled); the flow SHALL accept pasted text when a fetch is not possible.
-
-#### Scenario: Member posts an article to internalize
-
-- **WHEN** the member posts a browning-meat article (or pastes its text) and asks the agent to remember it
-- **THEN** the agent saves a distilled `browning-meat` technique memory via `save_guidance`, with the source recorded, and confirms what it saved
-
-#### Scenario: Posting a second source for an existing technique
-
-- **WHEN** the member posts further advice for a technique that already has a memory
-- **THEN** the agent reads the existing entry and saves a single refined memory rather than creating a duplicate
+- **WHEN** a stale plugin calls `list_guidance("purchasing")` during the deprecation window
+- **THEN** the alias returns the identical listing `read_guidance("purchasing")` returns
 
 ### Requirement: Technique memories surfaced at cook time
 
-During the guided `cook` flow, the agent SHALL surface relevant cooking-technique memories inline at the matching step. It SHALL map the recipe's steps to technique slugs using its **own world-knowledge** over the slugs returned by `list_guidance("cooking_techniques")` (no manifest or lookup table), then `read_guidance` the few that fit. It SHALL surface only **non-obvious** tips, capped to about the most valuable two, woven in at the relevant Prep/Cook step — not recited as a list. When no technique memory matches a step, the agent SHALL stay silent rather than improvise.
+During the guided `cook` flow, the agent SHALL surface relevant cooking-technique memories inline at the matching step. It SHALL map the recipe's steps to technique slugs using its **own world-knowledge** over the slugs returned by `read_guidance("cooking_techniques")`'s listing mode (no manifest or lookup table), then read the few that fit. It SHALL surface only **non-obvious** tips, capped to about the most valuable two, woven in at the relevant Prep/Cook step — not recited as a list. When no technique memory matches a step, the agent SHALL stay silent rather than improvise.
 
 #### Scenario: Browning tip surfaces at the browning step
 
@@ -111,4 +64,18 @@ During the guided `cook` flow, the agent SHALL surface relevant cooking-techniqu
 
 - **WHEN** a cook step has no matching technique memory
 - **THEN** the agent offers no technique tip for it rather than inventing one
+
+### Requirement: Shared, operator-curated cooking-technique corpus
+
+The system SHALL maintain `guidance/cooking_techniques/` as a **shared corpus** read by all tenants, holding general cooking-technique wisdom keyed by **technique slug** (e.g. `browning-meat.md`, `searing.md`, `resting-meat.md`) rather than by recipe or ingredient. The corpus SHALL be **operator-curated** via the admin guidance editor — like every guidance domain, it is not agent-writable. Each file SHALL carry distilled prose and MAY carry a `description` and a `source` (provenance) frontmatter field. Technique entries SHALL be flat — there is no relational/`_`-prefixed cross-entry file.
+
+#### Scenario: Technique keyed by slug, shared across tenants
+
+- **WHEN** the `guidance/cooking_techniques/` tree is inspected
+- **THEN** files are named for techniques (not recipes or ingredients) and the same file is read by every tenant
+
+#### Scenario: Provenance recorded
+
+- **WHEN** the operator saves a technique memory distilled from a named source
+- **THEN** the entry records the `source` so the advice is traceable and citable at the stove
 
