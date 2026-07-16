@@ -112,7 +112,7 @@ export function registerGroceryWidget(
 		{
 			title: "Display grocery list",
 			description:
-				"Render the current grocery list as the interactive shared Grocery card. Use this when the member asks to see or work with the list. The payload is render-only and re-hydrates before writes; content is an equivalent plain-text fallback.",
+				"THE answer to a member's show-me ask for the list — \"what's on my list?\", \"show me the groceries\", \"open my list\" — render this card; never answer those asks by pasting a read tool's contents (read_to_buy is agent-internal). Renders the current grocery list as the interactive shared Grocery card. The payload is render-only and re-hydrates before writes; content is an equivalent plain-text fallback.",
 			inputSchema: {},
 			_meta: { ui: { resourceUri: GROCERY_WIDGET_URI } },
 		},

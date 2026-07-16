@@ -24,6 +24,7 @@ The complete tool surface exposed by `yamp` to Claude. Each tool encodes a deter
 - **Config-gated** — the Kroger set (`flyer`, `kroger_prices`, `place_order`, `kroger_login_url`, `display_order_review`) registers only when the deployment carries Kroger API credentials; `create_instacart_handoff` registers only when the Instacart configuration resolves. Both gates are **deployment-level** (the credentials are Worker secrets, not per-tenant) — a walk-only deployment advertises no Kroger tools at all.
 - **Operator plane** — `list_proposals`, `confirm_proposal`, `reconcile_read_signals`, and `reconcile_enqueue_proposal` register only when the caller's tenant is the operator (`OWNER_TENANT_ID`). A member connector never sees them. The call-time `isOperator` check on the reconcile pair stays as defense in depth.
 - **App plane** — every widget/app-bridge-callable operation registers with the ext-apps `_meta.ui.visibility: ["app"]` marker, so a host excludes it from the model's tool context while the widget keeps calling it by name: the grocery snapshot family (`read_grocery_snapshot`, `grocery_add`, `grocery_remove`, `set_grocery_checked`, `set_grocery_buy_anyway`, `verify_grocery_pantry`, `set_grocery_substitution`, `relist_grocery_send_line`, `mark_grocery_send_placed`), the order-review family (`read_order_review`, `search_order_broader`, `search_order_catalog`, `save_order_brand_preference`, Kroger-gated), and `commit_shop`. `commit_shop` rides no other gate — it registers whenever the grocery widget does, purely app-plane. `display_*` widget tools (`display_recipe`, `display_meal_plan`, `display_grocery_list`, `display_order_review`) stay model-visible; a tool may legitimately serve both planes (`log_cooked`, `update_meal_plan`, `read_meal_plan`, `propose_meal_plan` are called by both the model and a widget).
+- **The initialize `instructions` field** carries a minimal tool-routing preamble (show-me asks render the matching `display_*` tool; `read_*` tools are agent-internal; member-facing prose stays plain) — never the persona. Hosts that inject server instructions (claude.ai) get routing redundancy; the tool descriptions carry the same guarantee everywhere else.
 - **The one-window dispatch aliases** (`toggle_favorite`/`toggle_reject`, `add_to_grocery_list`/`remove_from_grocery_list`, `list_guidance`) are registered plain and model-visible during their deprecation window — not app-plane-restricted — so a stale plugin's persona can still see and call them (see the deprecation convention below). At window close, `toggle_favorite`/`toggle_reject` flip to app-plane-only registrations (the recipe-card widget calls them by name through the app bridge) rather than disappearing; the grocery-list and `list_guidance` aliases are removed outright.
 
 ## Deprecation convention (`warnings` on the return)
@@ -101,7 +102,7 @@ Find recipes in the corpus. Takes an array of search **specs** and returns one r
 
 ### `read_recipe(slug)`
 
-Read a single recipe's full content (frontmatter + body).
+Agent-internal read for reasoning over a recipe — a member's show-me ask renders `display_recipe` instead; never paste this read as the answer. Read a single recipe's full content (frontmatter + body).
 
 **Params:**
 - `slug` (string, required)
@@ -113,7 +114,7 @@ Read a single recipe's full content (frontmatter + body).
 
 ### `display_recipe(slug)`
 
-Render a recipe as an **inline, branded card** in the conversation — the bespoke in-chat widget (`ui://recipe/card`). Call it when the member wants to **SEE** a recipe; call `read_recipe` instead when you only need to read a recipe to reason over it (meal planning), so an internal read never forces a card render. Reuses `read_recipe`'s reader over the shared corpus + the caller's overlay. It is also the conversation's **guided-cook surface** (D32): the card carries a **Start Cooking** mode (mise-en-place check-off, step-by-step navigation, per-step timers) whose steps come from the `cook` block when a skill supplies one, else from a client-side parse of the recipe body, plus **favorite** and **log-cooked** controls the widget **writes** back through the app bridge.
+THE answer when the member wants to **SEE** a recipe — render this card, never a prose paste of `read_recipe`. Renders a recipe as an **inline, branded card** in the conversation — the bespoke in-chat widget (`ui://recipe/card`). Call it when the member wants to **SEE** a recipe; call `read_recipe` instead when you only need to read a recipe to reason over it (meal planning), so an internal read never forces a card render. Reuses `read_recipe`'s reader over the shared corpus + the caller's overlay. It is also the conversation's **guided-cook surface** (D32): the card carries a **Start Cooking** mode (mise-en-place check-off, step-by-step navigation, per-step timers) whose steps come from the `cook` block when a skill supplies one, else from a client-side parse of the recipe body, plus **favorite** and **log-cooked** controls the widget **writes** back through the app bridge.
 
 **Params:**
 - `slug` (string, required)
@@ -317,7 +318,7 @@ The **planning window** (`preferences.planning_cadence_days`, days; defaults to 
 
 ### `display_meal_plan(meals?, attendance?, nights?, seed?, lock?, exclude?, boost_ingredients?, nudges?, slots?, ephemeral_vibes?, new_for_me?)`
 
-Propose a week **and** render it as an **inline, interactive planning card** in the conversation — the bespoke in-chat widget (`ui://plan/propose`), the propose twin of `display_recipe`. Call it when the member wants to **see and tweak** a proposed week; call `propose_meal_plan` when you only need the data to reason over, and `read_meal_plan` to read the already-saved plan. Takes the **same input** as `propose_meal_plan` and reuses the **same shared stateless planner** (`runProposeMealPlan`) — same params, same shaping, same determinism (see `propose_meal_plan` above for the full semantics); it does **not** alter or replace `propose_meal_plan`, which stays a plain data tool. The card **commits the chosen week itself** (D18): its Commit control writes through `update_meal_plan` (re-reading the plan, packing open dates, writing each slot) rather than asking you to — see **Notes** below.
+THE answer when the member wants to **SEE and TWEAK a proposed week** — and **not** the saved plan (that is `read_meal_plan`, answered in plain language). Proposes a week **and** renders it as an **inline, interactive planning card** in the conversation — the bespoke in-chat widget (`ui://plan/propose`), the propose twin of `display_recipe`. Call it when the member wants to **see and tweak** a proposed week; call `propose_meal_plan` when you only need the data to reason over, and `read_meal_plan` to read the already-saved plan. Takes the **same input** as `propose_meal_plan` and reuses the **same shared stateless planner** (`runProposeMealPlan`) — same params, same shaping, same determinism (see `propose_meal_plan` above for the full semantics); it does **not** alter or replace `propose_meal_plan`, which stays a plain data tool. The card **commits the chosen week itself** (D18): its Commit control writes through `update_meal_plan` (re-reading the plan, packing open dates, writing each slot) rather than asking you to — see **Notes** below.
 
 **Returns:**
 - A **widget-bearing** result: `_meta.ui.resourceUri` is `ui://plan/propose` (the MCP Apps resource the host mounts as an iframe), returned **unconditionally** — never capability-gated, because the pinned SDK's UI-capability probe is unreliable, so a host that cannot render the widget still receives the fallback below. `structuredContent` carries the propose result's display fields (the proposed slots — **flat and meal-ordered, each carrying its `meal`** — with mains/alternates/sides/why/flags, `variety`, `uncovered_at_risk`, the per-meal + attendance `diagnostics`) **plus** the render context the card's controls need — the replayable `request` (which echoes `meals` and `attendance`), the vibe-id→label map, the palette presets, and the corpus protein/cuisine facet universes (the `ProposeCardData` shape in [`SCHEMAS.md`](SCHEMAS.md)). `content` is a plain-text rendering of the proposed nights, the fallback for a host that cannot render the widget.
@@ -354,7 +355,7 @@ The grocery list is the SKU-free buy list for the next order (D1-backed, `grocer
 
 ### `read_to_buy(enrich?)`
 
-The **derived to-buy view** partitions `shopping = (active list ∪ plan needs) − pantry coverage − active substitution suppressions` into unchecked `to_buy` and durable `checked`. `place_order`, order preview, satellites, and sidebar counts consume only `to_buy`; checked rows remain visible but cannot enter a cart. One shared operation backs the member endpoint and adds opaque `snapshot_version` freshness.
+Agent-internal reasoning read — never presented as the answer to a show-me ask ("what's on my list?" renders `display_grocery_list`). The **derived to-buy view** partitions `shopping = (active list ∪ plan needs) − pantry coverage − active substitution suppressions` into unchecked `to_buy` and durable `checked`. `place_order`, order preview, satellites, and sidebar counts consume only `to_buy`; checked rows remain visible but cannot enter a cart. One shared operation backs the member endpoint and adds opaque `snapshot_version` freshness.
 
 **Guarantees:** read-only and cheap — the default read makes **zero Kroger calls, zero AI calls, and writes nothing** (derived lines exist only in the read; no reconcile or cron materializes them into rows). The plan is the derived lines' source of truth: editing the plan changes the next read with no sync step. The optional **`enrich: true`** variant turns on **one** Kroger Locations resolve (label → locationId, the `flyer` tool's posture) that pays for **both** per-line aisle `placement` and per-line `substitutes` under that single resolve — **zero product searches** either way; the default read is byte-identical to the pre-param shape.
 
@@ -424,7 +425,7 @@ Apply grocery-list operations in one ops-form call — `{ operations: [{ op: "ad
 
 The following register with `_meta.ui.visibility: ["app"]` (the registration model above) — the grocery widget calls them by name through the app bridge, but they never appear in a model's `tools/list`. `display_grocery_list()` is the model-visible counterpart.
 
-- `display_grocery_list()` returns `_meta.ui.resourceUri = "ui://grocery/list"`, versioned `GroceryListData`, and equivalent plain text. Use it for "show me my grocery list." The spawning payload is render-only; the widget re-hydrates before writes.
+- `display_grocery_list()` — THE answer to a member's show-me ask for the list ("what's on my list?", "show me the groceries"); never answer those by pasting `read_to_buy`. Returns `_meta.ui.resourceUri = "ui://grocery/list"`, versioned `GroceryListData`, and equivalent plain text. The spawning payload is render-only; the widget re-hydrates before writes.
 - `read_grocery_snapshot()` is the app-callable authoritative boot read with grouped sends, immutable persisted sent estimates/savings, and honest unlinked-cart degradation.
 - `grocery_add(name)` / `grocery_remove(key)` are the widget's own replay-safe add / canonical-key remove — the app-plane analogs of `update_grocery_list`'s `add`/`remove` ops.
 - `set_grocery_checked(key, checked, expected_row_version, snapshot_version, occurred_at?)` changes only checked/concurrency fields. A virtual check atomically materializes `source: "menu"`; identical replay succeeds and opposing stale state returns `conflict` with the current snapshot.
@@ -802,7 +803,7 @@ Append one cooking event to the caller's `cooking_log` (D1-backed; **no `commit_
 
 ### `read_meal_plan()`
 
-Return the current meal plan — the slots committed to cook next (transient cook intent, D1-backed, **slot grain**). Use at session start to resume.
+The saved plan's **source of truth** — answer a member's saved-plan question from this read in plain language (`display_meal_plan` does NOT show the saved plan; it proposes a new week). Returns the current meal plan — the slots committed to cook next (transient cook intent, D1-backed, **slot grain**). Use at session start to resume.
 
 **Params:** none.
 

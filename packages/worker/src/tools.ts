@@ -561,7 +561,15 @@ export function buildServer(
   origin?: string,
   ctx: RegistrationContext = CLOSED_REGISTRATION_CONTEXT,
 ): McpServer {
-  const server = new McpServer({ name: "yamp", version: "0.1.0" });
+  const server = new McpServer(
+    { name: "yamp", version: "0.1.0" },
+    {
+      // Routing preamble ONLY — never persona (agent-plugin-distribution). Tool
+      // descriptions carry the same guarantee for hosts that ignore instructions.
+      instructions:
+        "Routing: when the member asks to SEE something — their grocery list (\"what's on my list?\"), a recipe, a proposed week — call the matching display_* tool so the live card renders; never answer a show-me ask by pasting a read tool's contents. read_* tools are for your own reasoning. Keep member-facing replies plain and brief.",
+    },
+  );
 
   // tool-usage-trends: wrap registerTool ONCE, before any tool is registered, so every tool —
   // the inline ones below AND those added by the register*Tools helpers — emits one tenant-clean
@@ -840,7 +848,7 @@ export function buildServer(
     "read_recipe",
     {
       description:
-        "Read a single recipe's parsed frontmatter and markdown body by slug. Frontmatter includes `course` (the open-vocabulary dish type — main | side | dessert | breakfast | …), `pairs_with` (slugs of sides remembered for this main), and the AI-generated `description` (merged from the derived store; absent if not yet generated).",
+        "Agent-internal read for reasoning over a recipe — a member's show-me ask renders display_recipe instead; never paste this read as the answer. Read a single recipe's parsed frontmatter and markdown body by slug. Frontmatter includes `course` (the open-vocabulary dish type — main | side | dessert | breakfast | …), `pairs_with` (slugs of sides remembered for this main), and the AI-generated `description` (merged from the derived store; absent if not yet generated).",
       inputSchema: { slug: z.string() },
     },
     ({ slug }) => runTool(() => readRecipeDetail(env, tenant.id, slug)),
@@ -1068,7 +1076,7 @@ export function buildServer(
     "read_to_buy",
     {
       description:
-        "The checked-aware derived shopping view: (active list UNION plan needs) MINUS pantry coverage MINUS active substitution suppressions, partitioned into unchecked `to_buy` and durable `checked`. Only `to_buy` can enter an online cart; checked never means in_cart. Returns row freshness, pantry freshness/decision state, in-cart linkage, underived recipes, and opaque snapshot_version. Optional enrich adds store placement and relation-labeled substitute hints with at most one location resolve and zero product searches.",
+        "Agent-internal reasoning read — never present its contents as the answer to a show-me ask (\"what's on my list?\" renders display_grocery_list instead). The checked-aware derived shopping view: (active list UNION plan needs) MINUS pantry coverage MINUS active substitution suppressions, partitioned into unchecked `to_buy` and durable `checked`. Only `to_buy` can enter an online cart; checked never means in_cart. Returns row freshness, pantry freshness/decision state, in-cart linkage, underived recipes, and opaque snapshot_version. Optional enrich adds store placement and relation-labeled substitute hints with at most one location resolve and zero product searches.",
       inputSchema: { enrich: z.boolean().optional() },
     },
     (input) => runTool(() => computeToBuyView(env, tenant.id, { enrich: input.enrich === true })),
