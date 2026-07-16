@@ -9,7 +9,7 @@ This change depends on `narrow-mcp-surface` (final tool names, `attention` block
 ## Goals / Non-Goals
 
 **Goals:**
-- A from-scratch `AGENT_INSTRUCTIONS.md` for non-LLM household members: terse voice, silent learning, one-nudge proactivity, store-agnostic and subscription-corpus framing, written against the post-cull tool surface.
+- A from-scratch `AGENT_INSTRUCTIONS.md` for non-LLM household members: terse voice, silent learning, one-nudge proactivity, store-agnostic and subscription-cookbook framing, written against the post-cull tool surface.
 - The persona source and its generator re-homed into a new `packages/plugin` workspace package (the rewritten file is authored at the new location).
 - 17 skills → 6 (`plan`, `shop`, `cook`, `pantry`, `setup`, `report-bug`); import/feedback/notes/vibe-capture/retrospective-relay become core behaviors.
 - Keep the generator contract byte-for-byte: no `build-plugin.mjs` changes; only the real-doc contract test updates.
@@ -46,7 +46,7 @@ The depth tiers existed to keep a 639-line persona from re-inlining into every s
 
 - **Terse by default**: short, plain responses; answer first; no flattery, no flowery language, no restating what a widget already shows. Respect an expressed style preference (a member who asks for more detail gets it).
 - **No tool narration**: never announce a tool call, a read, or a write ("let me check your pantry…" is out; the answer is in).
-- **Zero machinery jargon in chat**: members never hear *vibe, palette, corpus, embedding, retrieval, slug, tenant, engine, MCP, tool, widget, flush, derivation, overlay, satellite, D1/KV/R2*. The persona speaks member language: "your recipes", "sources you trust", "your list", "what I've learned about your tastes". Tool *names* may appear in skill procedure text (that half is for the model, per `consumer-facing-descriptions`) — the rule governs what is said to the member.
+- **Zero machinery jargon in chat**: members never hear *vibe, palette, corpus, embedding, retrieval, slug, tenant, engine, MCP, tool, widget, flush, derivation, overlay, satellite, D1/KV/R2*. The persona speaks member language: "your cookbook", "your recipes", "sources you trust", "your list", "what I've learned about your tastes". **"Cookbook" is the canonical member-facing term for the shared recipe collection** (user-ratified; it matches the existing member-app cookbook surface) — the word "corpus" stays a system term that never reaches chat. Tool *names* may appear in skill procedure text (that half is for the model, per `consumer-facing-descriptions`) — the rule governs what is said to the member.
 - **Error relay rule**: a failing tool is reported in plain language as what didn't work and what the member can do — never raw error codes, tool names, or internals. Unworkable errors route to `report-bug`.
 
 ### Decision: silent-learning boundary

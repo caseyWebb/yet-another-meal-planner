@@ -18,12 +18,12 @@
 
 ### Requirement: Operator-only tools register only for the operator tenant
 
-`list_proposals`, `confirm_proposal`, `reconcile_read_signals`, `reconcile_enqueue_proposal`, and `update_recipe` (the merge-review flow's corpus writer) SHALL register only when the resolved tenant is the operator. Their contracts are unchanged for the operator; members reach the corresponding flows through the member web app (reconcile confirmation) and future admin surfaces (merge review).
+`list_proposals`, `confirm_proposal`, `reconcile_read_signals`, and `reconcile_enqueue_proposal` SHALL register only when the resolved tenant is the operator. Their contracts are unchanged for the operator; members reach reconcile confirmation through the member web app, and merge-review resolution is a fast-follow operator admin surface (no MCP tool).
 
-#### Scenario: The operator session carries the reconcile and merge-review tools
+#### Scenario: The operator session carries the reconcile and proposal tools
 
 - **WHEN** the operator's MCP session requests the tool list
-- **THEN** it includes `list_proposals`, `confirm_proposal`, `reconcile_read_signals`, `reconcile_enqueue_proposal`, and `update_recipe` in addition to the member surface
+- **THEN** it includes `list_proposals`, `confirm_proposal`, `reconcile_read_signals`, and `reconcile_enqueue_proposal` in addition to the member surface
 
 #### Scenario: A member session carries none of them
 

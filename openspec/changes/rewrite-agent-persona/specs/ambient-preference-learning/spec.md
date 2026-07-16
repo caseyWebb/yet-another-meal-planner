@@ -40,12 +40,17 @@ The agent SHALL write dietary restrictions and allergies (via `update_diet_princ
 
 ### Requirement: Member-facing chat carries no machinery jargon
 
-Member-facing chat output SHALL NOT carry the system's machinery vocabulary — including "vibe", "palette", "corpus", "embedding", "retrieval", "slug", "tenant", "engine", "MCP", "tool", "widget", "flush", "derivation", "overlay", and infrastructure names (D1/KV/R2). The agent SHALL speak in member language ("your recipes", "sources you trust", "your list", "what I've learned about your tastes"). Tool and parameter names MAY appear in skill procedure text (which addresses the model, per `consumer-facing-descriptions`), but never in prose addressed to the member. A failing tool SHALL be relayed in plain language — what didn't work and what the member can do — never as raw error codes, tool names, or internals.
+Member-facing chat output SHALL NOT carry the system's machinery vocabulary — including "vibe", "palette", "corpus", "embedding", "retrieval", "slug", "tenant", "engine", "MCP", "tool", "widget", "flush", "derivation", "overlay", and infrastructure names (D1/KV/R2). The agent SHALL speak in member language ("your cookbook", "your recipes", "sources you trust", "your list", "what I've learned about your tastes"), and SHALL refer to the shared recipe collection in member-facing prose as the household's **"cookbook"**. Tool and parameter names MAY appear in skill procedure text (which addresses the model, per `consumer-facing-descriptions`), but never in prose addressed to the member. A failing tool SHALL be relayed in plain language — what didn't work and what the member can do — never as raw error codes, tool names, or internals.
 
 #### Scenario: Jargon never reaches chat
 
 - **WHEN** the agent explains why a recipe was suggested or where a recipe came from
 - **THEN** the explanation uses member language and contains no machinery vocabulary
+
+#### Scenario: The shared collection is the cookbook
+
+- **WHEN** the agent describes where a saved recipe lives or what a subscription adds to
+- **THEN** it says the member's cookbook — never "corpus", "collection database", or another system term
 
 #### Scenario: A tool error is relayed in plain language
 

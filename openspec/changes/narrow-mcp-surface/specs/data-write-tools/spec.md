@@ -30,7 +30,7 @@ The system SHALL provide a `set_recipe_disposition(slug, disposition)` tool, `di
 
 ### Requirement: Granular write tools, no batch commit
 
-The system SHALL expose a granular write tool per category and SHALL NOT provide a batch `commit_changes` tool. The member-surface write categories and their homes are: recipe import (`import_recipe` — the fused parse/classify/persist path), recipe disposition (`set_recipe_disposition`), ready-to-eat (`add_draft_ready_to_eat` / `update_ready_to_eat`, pending the separate ready-to-eat removal change), config (`update_preferences` / `update_taste` / `update_diet_principles`), cooking events (`log_cooked`), pantry and kitchen (`update_pantry` operations — add/remove/verify/dispose plus the equipment ops), meal plan (`update_meal_plan`), grocery list (`update_grocery_list` operations), recipe notes (`add_recipe_note`), meal vibes (`add_meal_vibe`), and store capture (`add_store` / `add_store_note`). Objective recipe edits are the operator plane's `update_recipe` (merge review); staples, stockup, ingredient aliases, guidance content, discovery config, and store/note maintenance are written through the member web app or operator admin surfaces over the same shared operations, not through member MCP tools. A multi-write turn SHALL issue one granular call per write. No tool in this capability SHALL write a Kroger cart or call an external commerce service (cart placement is the separate `place_order` tool).
+The system SHALL expose a granular write tool per category and SHALL NOT provide a batch `commit_changes` tool. The member-surface write categories and their homes are: recipe import (`import_recipe` — the fused parse/classify/persist path), recipe disposition (`set_recipe_disposition`), ready-to-eat (`add_draft_ready_to_eat` / `update_ready_to_eat`, pending the separate ready-to-eat removal change), config (`update_preferences` / `update_taste` / `update_diet_principles`), cooking events (`log_cooked`), pantry and kitchen (`update_pantry` operations — add/remove/verify/dispose plus the equipment ops), meal plan (`update_meal_plan`), grocery list (`update_grocery_list` operations), recipe notes (`add_recipe_note`), meal vibes (`add_meal_vibe`), and store capture (`add_store` / `add_store_note`). Objective recipe edits leave MCP entirely (the member web app owns member edits; merge review lands on the fast-follow admin merge screen); staples, stockup, ingredient aliases, guidance content, discovery config, and store/note maintenance are written through the member web app or operator admin surfaces over the same shared operations, not through member MCP tools. A multi-write turn SHALL issue one granular call per write. No tool in this capability SHALL write a Kroger cart or call an external commerce service (cart placement is the separate `place_order` tool).
 
 #### Scenario: There is no commit_changes tool
 
@@ -41,25 +41,6 @@ The system SHALL expose a granular write tool per category and SHALL NOT provide
 
 - **WHEN** a turn needs to write a recipe favorite, a pantry change, and a grocery item
 - **THEN** it calls `set_recipe_disposition`, `update_pantry`, and `update_grocery_list` separately, rather than batching them into one commit
-
-### Requirement: Objective recipe content commits to GitHub
-
-`update_recipe(slug, updates)` and the shared create operation (behind `import_recipe` and the discovery sweep) SHALL write only objective shared recipe **content** (frontmatter/body) to the shared corpus store, and SHALL surface failures as structured errors. `update_recipe` SHALL register on the **operator plane only** (`mcp-tool-gating`) — its remaining chat use is the agent-guided merge-review flow. It SHALL reject `favorite`, `reject`, or `status` keys with a structured `validation_failed` error directing the caller to `set_recipe_disposition`, and SHALL reject `last_cooked` (derived via the cooking log / `log_cooked`). It SHALL NOT write any per-tenant overlay or other domain data, and SHALL return `{ slug, updated_fields }`.
-
-#### Scenario: update_recipe commits objective content
-
-- **WHEN** the operator calls `update_recipe("miso-salmon", { time_total: 30 })` with valid objective frontmatter
-- **THEN** the shared recipe content is written and the tool returns `{ slug, updated_fields }`
-
-#### Scenario: update_recipe rejects subjective keys
-
-- **WHEN** `update_recipe("miso-salmon", { status: "active" })` is called
-- **THEN** a structured `validation_failed` error is returned directing the caller to `set_recipe_disposition`, and nothing is written
-
-#### Scenario: Write failure is structured
-
-- **WHEN** the corpus store is unreachable or rejects the write after retries are exhausted
-- **THEN** the tool returns a structured `upstream_unavailable` error and does not throw an unhandled exception
 
 ### Requirement: Profile writes target D1
 
@@ -144,7 +125,7 @@ The user-curated narrative `update_*` tools — `update_taste` and `update_diet_
 
 ### Requirement: Recipe write tools enforce controlled vocabularies
 
-The recipe write paths — the shared create operation (behind `import_recipe` and the discovery sweep) and the operator-plane `update_recipe` — SHALL reject a write whose recipe frontmatter carries a `protein`, `cuisine`, or `requires_equipment` value outside its controlled vocabulary, returning a structured `validation_failed` error (naming the offending field and value) and writing **nothing**. Enforcement SHALL occur at the shared `validateFile` step so every recipe write path is covered uniformly. `protein` and `cuisine` SHALL each be present as an in-vocabulary value **or the explicit literal `null`** — the write path SHALL NOT normalize a no-focus dish to an absent field and SHALL NOT accept the literal string `none` (a `none`/`""` value is rejected as non-compliant, prompting `null`). The `update_recipe` tool description SHALL enumerate the `protein` and `cuisine` controlled sets and SHALL state that a dish with no protein focus is written as `protein: null` — never omitted, never `none`; `import_recipe` classifies these fields internally, so its description carries no authoring vocabulary.
+The recipe write path — the shared create operation (behind `import_recipe` and the discovery sweep) — SHALL reject a write whose recipe frontmatter carries a `protein`, `cuisine`, or `requires_equipment` value outside its controlled vocabulary, returning a structured `validation_failed` error (naming the offending field and value) and writing **nothing**. Enforcement SHALL occur at the shared `validateFile` step so every recipe write path is covered uniformly. `protein` and `cuisine` SHALL each be present as an in-vocabulary value **or the explicit literal `null`** — the write path SHALL NOT normalize a no-focus dish to an absent field and SHALL NOT accept the literal string `none` (a `none`/`""` value is rejected as non-compliant, prompting `null`). `import_recipe` classifies these fields internally, so its description carries no authoring vocabulary.
 
 #### Scenario: Off-vocabulary protein is rejected before the write
 
@@ -158,7 +139,7 @@ The recipe write paths — the shared create operation (behind `import_recipe` a
 
 #### Scenario: Off-vocabulary equipment is rejected before the write
 
-- **WHEN** `update_recipe` is called with `requires_equipment: ["air-fryer"]` and `air-fryer` is not in the equipment vocabulary
+- **WHEN** a recipe write through the shared create operation carries `requires_equipment: ["air-fryer"]` and `air-fryer` is not in the equipment vocabulary
 - **THEN** the tool returns a structured `validation_failed` error naming the offending slug, and no change is written
 
 #### Scenario: In-vocabulary recipe write succeeds
@@ -168,24 +149,20 @@ The recipe write paths — the shared create operation (behind `import_recipe` a
 
 ### Requirement: Recipe write tools enforce the required-field contract
 
-The shared create operation (behind `import_recipe` and the discovery sweep) and the operator-plane `update_recipe` SHALL enforce the full required-field contract (the `recipe-metadata-contract` capability), rejecting with a structured `validation_failed` error (no write) any change whose resulting recipe is missing a required field or carries an off-contract empty. For `update_recipe`, the contract SHALL be checked against the **merged result** (existing frontmatter overlaid with the patch), not the patch alone — so a single-field edit on an already-compliant recipe succeeds, while an edit that would strip or empty a required field is rejected. `import_recipe` SHALL populate the required authored fields itself (parse plus classification), so a member import can never produce a silently un-indexed recipe.
+The shared create operation (behind `import_recipe` and the discovery sweep) SHALL enforce the full required-field contract (the `recipe-metadata-contract` capability), rejecting with a structured `validation_failed` error (no write) any change whose resulting recipe is missing a required field or carries an off-contract empty. `import_recipe` SHALL populate the required authored fields itself (parse plus classification), so a member import can never produce a silently un-indexed recipe.
 
 #### Scenario: The create path rejects a missing required field
 
 - **WHEN** the create operation is invoked with frontmatter that omits a required authored field
 - **THEN** it returns a structured `validation_failed` error naming the missing field and writes nothing
 
-#### Scenario: update_recipe validates the merged result, not the patch
-
-- **WHEN** `update_recipe` patches only `time_total` on a recipe that already carries every other required field
-- **THEN** the merged recipe is contract-compliant and the edit lands — the patch need not resend the full field set
-
-#### Scenario: update_recipe rejects an edit that empties a required field
-
-- **WHEN** `update_recipe` patches `ingredients_key: []` onto an existing recipe
-- **THEN** the merged result violates the non-empty rule and the tool returns `validation_failed`, writing nothing
-
 ## REMOVED Requirements
+
+### Requirement: Objective recipe content commits to GitHub
+
+**Reason**: `update_recipe` leaves the MCP surface entirely (user-ratified: the merge-review admin UI is an easy fast-follow, so no operator-plane retention). Member recipe editing belongs to the web app; the create-path objective-write guarantees live on in the `import_recipe` requirement (`recipe-import`) and the vocabulary/required-field requirements below.
+
+**Migration**: member edits happen in the member web app; operator merge folding arrives with the fast-follow admin merge screen over the retained server-side objective-update operation; a stale plugin's `update_recipe` call receives the generic unknown-tool rejection after the coordinated plugin publish.
 
 ### Requirement: toggle_favorite writes the caller's favorite boolean to the D1 overlay
 
