@@ -218,6 +218,8 @@ export function grocerySnapshotText(data: GroceryListData): string {
         id?: unknown;
         label?: unknown;
         in_pantry?: unknown;
+        in_cart?: unknown;
+        on_list?: unknown;
         relation?: { role?: unknown; via?: unknown; via_label?: unknown };
         on_sale_hint?: { price?: { promo?: unknown } };
       };
@@ -234,8 +236,10 @@ export function grocerySnapshotText(data: GroceryListData): string {
           ? "can stand in"
           : null;
       const promo = typeof row.on_sale_hint?.price?.promo === "number" ? row.on_sale_hint.price.promo : null;
+      // Each surfaced substitute carries its actionability reason(s) (scope-substitution-suggestions):
+      // in the pantry, in the cart, already on the list, and/or on sale — the agent snapshot names them.
       return label
-        ? [`${label}${relationship ? ` (${relationship})` : ""}${row.in_pantry ? " (pantry)" : ""}${promo == null ? "" : ` ($${promo.toFixed(2)} promo)`}`]
+        ? [`${label}${relationship ? ` (${relationship})` : ""}${row.in_pantry ? " (pantry)" : ""}${row.in_cart ? " (in cart)" : ""}${row.on_list ? " (on list)" : ""}${promo == null ? "" : ` ($${promo.toFixed(2)} promo)`}`]
         : [];
     });
     return `${line.checked_at ? "✓" : "○"} ${line.display_name ?? line.name} (${line.quantity}${line.assumed_quantity ? " assumed" : ""})${line.staple ? " [Staple]" : ""}${line.note ? ` — ${line.note}` : ""}${recipes.length ? ` [for: ${recipes.join(", ")}]` : ""}${placement ? ` [${placement}]` : ""}${substitutes.length ? ` [try: ${substitutes.join(", ")}]` : ""}`;

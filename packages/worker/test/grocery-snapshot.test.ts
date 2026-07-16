@@ -58,6 +58,20 @@ describe("readGrocerySnapshot", () => {
     expect(text).toContain("Kroger: 1 item, sent 2026-07-08T09:30:00Z, awaiting confirmation, sent estimate $12.00, flyer savings $2.50\n  - Rice (3 bags)");
   });
 
+  it("names the in_cart and on_list substitute justifications alongside pantry and promo", async () => {
+    const h = sqliteEnv([T]);
+    const base = await readGrocerySnapshot(h.env, T, NOW);
+    const text = grocerySnapshotText({
+      ...base,
+      lines: [
+        { key: "beans", name: "Beans", quantity: "2 cans", kind: "grocery", domain: "grocery", origin: "both", checked_at: null, row_version: 1, updated_at: NOW.toISOString(), for_recipes: [], substitutes: [{ id: "lentils", label: "Lentils", relation: { role: "sibling", via: "legumes", via_label: "Legumes & pulses" }, in_pantry: false, in_cart: true }] },
+        { key: "rice", name: "Rice", quantity: "1 bag", kind: "grocery", domain: "grocery", origin: "both", checked_at: null, row_version: 1, updated_at: NOW.toISOString(), for_recipes: [], substitutes: [{ id: "quinoa", label: "Quinoa", relation: { role: "sibling" }, in_pantry: false, on_list: true }] },
+      ],
+    });
+    expect(text).toContain("○ Beans (2 cans) [try: Lentils (same family · via Legumes & pulses) (in cart)]");
+    expect(text).toContain("○ Rice (1 bag) [try: Quinoa (same family) (on list)]");
+  });
+
   it("marks shopping lines that belong to the household staples list", async () => {
     const h = sqliteEnv([T]);
     await addGroceryRow(h.env, T, { name: "olive oil" }, "2026-07-12");

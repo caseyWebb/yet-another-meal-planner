@@ -522,12 +522,53 @@ describe("computeToBuyView — enrich (member-app-differentiators D6, generalize
     expect(view.flyer_as_of).not.toBeNull();
   });
 
+  it("two interchangeable active-list lines surface each other as on_list consolidation nudges (scope-substitution-suggestions)", async () => {
+    const h = sqliteEnv([T]);
+    seedProfile(h, { primary: "kroger", preferred_location: "03500520" });
+    seedSiblingGraph(h);
+    // Both siblings are ACTIVE grocery-list lines; no pantry, no flyer.
+    await addGroceryRow(h.env, T, { name: "cabbage::type-napa" }, TODAY);
+    await addGroceryRow(h.env, T, { name: "cabbage::color-green" }, TODAY);
+    const view = await computeToBuyView(h.env, T, { enrich: true });
+    const napa = view.to_buy.find((l) => l.key === "cabbage::type-napa")!;
+    const green = view.to_buy.find((l) => l.key === "cabbage::color-green")!;
+    // Each surfaces ONLY the other (both on the list); red + the generalization are non-actionable.
+    expect(napa.substitutes?.map((s) => s.id)).toEqual(["cabbage::color-green"]);
+    expect(napa.substitutes?.[0].on_list).toBe(true);
+    expect(green.substitutes?.map((s) => s.id)).toEqual(["cabbage::type-napa"]);
+    expect(green.substitutes?.[0].on_list).toBe(true);
+  });
+
+  it("a plan-derived (virtual) sibling stays filtered out — being a to-buy need is not, on its own, actionable", async () => {
+    const h = sqliteEnv([T]);
+    seedProfile(h, { primary: "kroger", preferred_location: "03500520" });
+    seedSiblingGraph(h);
+    await addGroceryRow(h.env, T, { name: "cabbage::type-napa" }, TODAY);
+    // color-red is only a PLAN need (virtual line), never on the list, in the cart, the pantry, or on sale.
+    seedRecipe(h, "slaw", ["cabbage::color-red"]);
+    seedPlan(h, "slaw");
+    const view = await computeToBuyView(h.env, T, { enrich: true });
+    const napa = view.to_buy.find((l) => l.key === "cabbage::type-napa")!;
+    // red is a to-buy line but ONLY a plan need — not on the list/cart/pantry/sale — so it never
+    // surfaces as napa's substitute (the old to-buy-set exclusion is gone; the filter does this now).
+    expect(napa.substitutes).toEqual([]);
+    // The asymmetry that proves the point: red's OWN virtual line DOES surface napa, because napa
+    // genuinely is an active list line (an on_list consolidation nudge). Possession/acquisition —
+    // not mere to-buy membership — is the gate, so the virtual side stays empty while the real one nudges.
+    const red = view.to_buy.find((l) => l.key === "cabbage::color-red")!;
+    expect(red.substitutes?.map((s) => s.id)).toEqual(["cabbage::type-napa"]);
+    expect(red.substitutes?.[0].on_list).toBe(true);
+  });
+
   it("display fields ride only on the enriched read — the default omits display_name/via_label/department_label on every line type (reify-ingredient-display-names)", async () => {
     const h = sqliteEnv([T]);
     seedProfile(h, { primary: "kroger", preferred_location: "03500520" });
     seedDeptGraph(h); // flour → baking (membership): a department_label source
     seedSiblingGraph(h); // cabbage family: substitutes carrying a via/via_label
     seedAlias(h); // green-onion + the scallions alias: for pantry coverage
+    // A pantry sibling makes the napa line's `cabbage::color-red` co-child actionable, so a
+    // via-bearing suggestion survives the actionability filter (scope-substitution-suggestions).
+    seedPantry(h, "Red cabbage", "cabbage::color-red");
 
     // to_buy lines
     await addGroceryRow(h.env, T, { name: "flour" }, TODAY);

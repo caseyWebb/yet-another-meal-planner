@@ -76,6 +76,35 @@ test("substitution confirmation exposes a durable Undo action", async ({
 	await expect(groceryPage.item("halloumi")).toBeVisible();
 });
 
+test("in_cart and on_list substitutes render their surfacing justification inline", async ({
+	asMember,
+	groceryPage,
+	page,
+}) => {
+	await asMember();
+	const view: GroceryListData = {
+		...original,
+		lines: [
+			{
+				...original.lines[0],
+				substitutes: [
+					{ id: "paneer", label: "Paneer", relation: { role: "sibling", via: "cheese", via_label: "Cheese" }, in_pantry: false, in_cart: true },
+					{ id: "queso", label: "Queso", relation: { role: "sibling", via: "cheese", via_label: "Cheese" }, in_pantry: false, on_list: true },
+				],
+			},
+		],
+	};
+	await page.route("**/api/grocery/view", (route) => route.fulfill({ json: view }));
+	await groceryPage.goto();
+	await groceryPage.landmark();
+	await expect(
+		groceryPage.substitutionHint("halloumi", "paneer").getByTestId("subs-cart-hit"),
+	).toHaveText("in your cart");
+	await expect(
+		groceryPage.substitutionHint("halloumi", "queso").getByTestId("subs-list-hit"),
+	).toHaveText("already on your list");
+});
+
 test("pantry actions show freshness and Buy-anyway Undo", async ({
 	asMember,
 	groceryPage,
