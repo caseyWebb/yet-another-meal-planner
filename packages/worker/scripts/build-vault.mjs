@@ -3,7 +3,7 @@
 // source (vault-template/) and the recipe vocabulary (src/vocab.js).
 //
 // The vault is the third generated, committed artifact in this repo (alongside
-// plugin/ from AGENT_INSTRUCTIONS.md and assets/admin/ from src/admin/). It is the
+// plugin/ from packages/plugin/AGENT_INSTRUCTIONS.md and assets/admin/ from src/admin/). It is the
 // corpus-authoring surface: a preconfigured vault whose Metadata Menu `recipe`
 // fileClass turns every vocab-bound facet (protein / cuisine / season /
 // requires_equipment, plus the open `course` set) into a dropdown CONSTRAINED TO THE

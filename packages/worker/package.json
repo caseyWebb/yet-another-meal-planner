@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "yamp: the Cloudflare Worker (MCP server + operator admin panel) and the plugin/vault build tooling that data repos run via reusable CI workflows.",
+  "description": "yamp: the Cloudflare Worker (MCP server + operator admin panel) and its vault build tooling.",
   "license": "AGPL-3.0-only",
   "engines": {
     "node": ">=22"
@@ -23,9 +23,8 @@
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit && tsc --noEmit -p admin/visual/tsconfig.json && tsc --noEmit -p app/visual/tsconfig.json",
     "test": "vitest run",
-    "test:tooling": "node --test tests/build-plugin.test.mjs tests/build-vault.test.mjs tests/merge-wrangler-config.test.mjs tests/navigate-denylist.test.mjs tests/stamp-readme-badge.test.mjs tests/strip-facets.test.mjs tests/check-licenses.test.mjs tests/source-hygiene.test.mjs",
+    "test:tooling": "node --test tests/build-vault.test.mjs tests/merge-wrangler-config.test.mjs tests/navigate-denylist.test.mjs tests/stamp-readme-badge.test.mjs tests/strip-facets.test.mjs tests/check-licenses.test.mjs tests/source-hygiene.test.mjs",
     "check:licenses": "node scripts/check-licenses.mjs",
-    "build:plugin": "node scripts/build-plugin.mjs",
     "build:vault": "node scripts/build-vault.mjs",
     "test:admin": "playwright test",
     "test:app": "playwright test -c playwright.app.config.ts"

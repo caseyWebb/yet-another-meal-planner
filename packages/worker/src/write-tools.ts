@@ -373,7 +373,7 @@ export function registerWriteTools(
 
   // User-curated config writers — content-faithful: write exactly what the caller
   // supplies. The discipline of WHEN to call these (only on explicit user
-  // direction) lives in AGENT_INSTRUCTIONS.md.
+  // direction) lives in packages/plugin/AGENT_INSTRUCTIONS.md.
 
   server.registerTool(
     "update_preferences",
