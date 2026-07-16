@@ -353,8 +353,11 @@ describe("identitySiblings — the D3 walk over the persisted graph", () => {
 
 // --- the shared cheap-half annotator (D1/D3, inline-substitution-hints) -------------
 
-describe("annotateSubstitutes — the shared cheap half, batched over the whole to-buy set", () => {
-  it("reproduces the P4 op's cabbage family output: labeled siblings + in_pantry + on_sale_hint, zero Kroger calls", async () => {
+describe("annotateSubstitutes — actionable-only (scope-substitution-suggestions)", () => {
+  /** No possession context — the default for tests that drive actionability via one reason. */
+  const NONE = { inCart: new Set<string>(), onList: new Set<string>() };
+
+  it("keeps siblings actionable by pantry or sale, labeled + annotated, zero Kroger calls", async () => {
     const h = sqliteEnv([T]);
     seedGraph(h, CABBAGE_NODES, CABBAGE_EDGES);
     h.raw
@@ -367,51 +370,130 @@ describe("annotateSubstitutes — the shared cheap half, batched over the whole 
     ];
     const ctx = emptyIngredientContext(h.env); // search_term falls back to the flattened base
 
-    const out = await annotateSubstitutes(h.env, ["cabbage::type-napa"], { pantry, saleItems, ctx });
+    const out = await annotateSubstitutes(h.env, ["cabbage::type-napa"], { pantry, saleItems, ctx, ...NONE });
     const siblings = out.get("cabbage::type-napa")!;
+    // All three survive: red via pantry, green + cabbage via the "cabbage" (shared BASE) sale match.
     expect(siblings.map((s) => s.id)).toEqual(["cabbage::color-green", "cabbage::color-red", "cabbage"]);
-    // in_pantry: only the seeded red-cabbage sibling.
     expect(siblings.find((s) => s.id === "cabbage::color-red")!.in_pantry).toBe(true);
     expect(siblings.find((s) => s.id === "cabbage::color-green")!.in_pantry).toBe(false);
-    // on_sale_hint: element match on "cabbage" (the shared family BASE) — every sibling
-    // sharing that base gets the K1 hint, NOT the K2 "bok choy" row (a different term).
+    // on_sale_hint: element match on "cabbage" — the K1 row, NOT the K2 "bok choy" row.
     const expectedHint = { sku: "K1", description: "Shredded Cabbage Mix", price: { regular: 2.5, promo: 2 }, savings: 0.5 };
     expect(siblings.find((s) => s.id === "cabbage::color-green")!.on_sale_hint).toEqual(expectedHint);
     expect(siblings.find((s) => s.id === "cabbage::color-red")!.on_sale_hint).toEqual(expectedHint);
     expect(siblings.find((s) => s.id === "cabbage")!.on_sale_hint).toEqual(expectedHint);
   });
 
-  it("a satellite rollup's label-keyed match (matched_terms empty by contract) still hints via the description substring", async () => {
+  it("drops every neighbor the member neither has, is carting, has listed, nor can deal on", async () => {
     const h = sqliteEnv([T]);
     seedGraph(h, CABBAGE_NODES, CABBAGE_EDGES);
-    const pantry = new Set<string>();
+    // No pantry, no cart, no list, no sale → nothing is actionable.
+    const out = await annotateSubstitutes(h.env, ["cabbage::type-napa"], { pantry: new Set(), saleItems: [], ctx: emptyIngredientContext(h.env), ...NONE });
+    expect(out.get("cabbage::type-napa")).toEqual([]);
+  });
+
+  it("on-sale is an INDEPENDENT reason — an unowned neighbor surfaces solely because it is on sale", async () => {
+    const h = sqliteEnv([T]);
+    seedGraph(h, CABBAGE_NODES, CABBAGE_EDGES);
     const saleItems: FlyerItem[] = [
-      { sku: "F1", brand: "", description: "Green Cabbage", size: null, price: { regular: 2, promo: 1.5 }, savings: 0.5, categories: [], matched_terms: [] },
+      { sku: "K1", brand: "Kroger", description: "Shredded Cabbage Mix", size: "10 oz", price: { regular: 2.5, promo: 2 }, savings: 0.5, categories: [], matched_terms: ["cabbage"] },
     ];
-    const ctx = emptyIngredientContext(h.env);
-    const out = await annotateSubstitutes(h.env, ["cabbage::type-napa"], { pantry, saleItems, ctx });
-    const green = out.get("cabbage::type-napa")!.find((s) => s.id === "cabbage::color-green")!;
-    expect(green.on_sale_hint).toEqual({ sku: "F1", description: "Green Cabbage", price: { regular: 2, promo: 1.5 }, savings: 0.5 });
+    const out = await annotateSubstitutes(h.env, ["cabbage::type-napa"], { pantry: new Set(), saleItems, ctx: emptyIngredientContext(h.env), ...NONE });
+    const siblings = out.get("cabbage::type-napa")!;
+    expect(siblings.map((s) => s.id)).toEqual(["cabbage::color-green", "cabbage::color-red", "cabbage"]);
+    for (const s of siblings) {
+      expect(s.in_pantry).toBe(false);
+      expect(s.in_cart).toBeUndefined();
+      expect(s.on_list).toBeUndefined();
+      expect(s.on_sale_hint).toMatchObject({ sku: "K1" });
+    }
+  });
+
+  it("an in_cart neighbor surfaces flagged in_cart; a non-cart sibling is dropped", async () => {
+    const h = sqliteEnv([T]);
+    seedGraph(h, CABBAGE_NODES, CABBAGE_EDGES);
+    const out = await annotateSubstitutes(h.env, ["cabbage::type-napa"], {
+      pantry: new Set(),
+      saleItems: [],
+      ctx: emptyIngredientContext(h.env),
+      inCart: new Set(["cabbage::color-green"]),
+      onList: new Set(),
+    });
+    const siblings = out.get("cabbage::type-napa")!;
+    expect(siblings.map((s) => s.id)).toEqual(["cabbage::color-green"]);
+    expect(siblings[0].in_cart).toBe(true);
+    expect(siblings[0].in_pantry).toBe(false);
+    expect(siblings[0].on_list).toBeUndefined();
+  });
+
+  it("an active-list neighbor surfaces flagged on_list — a consolidation nudge (the old to-buy-set exclusion is gone)", async () => {
+    const h = sqliteEnv([T]);
+    seedGraph(h, CABBAGE_NODES, CABBAGE_EDGES);
+    const out = await annotateSubstitutes(h.env, ["cabbage::type-napa", "cabbage::color-red"], {
+      pantry: new Set(),
+      saleItems: [],
+      ctx: emptyIngredientContext(h.env),
+      inCart: new Set(),
+      onList: new Set(["cabbage::color-red"]), // red is itself an active list line
+    });
+    // napa's walk no longer excludes a same-batch id: red surfaces BECAUSE it is on the list.
+    const siblings = out.get("cabbage::type-napa")!;
+    expect(siblings.map((s) => s.id)).toEqual(["cabbage::color-red"]);
+    expect(siblings[0].on_list).toBe(true);
+  });
+
+  it("filters BEFORE the cap — an actionable neighbor ranked past the raw SIBLINGS_CAP still surfaces", async () => {
+    const h = sqliteEnv([T]);
+    // Seven general-kind specializations: six siblings of "chile::a", the last (chile::g) the only
+    // owned one. A cap-then-filter walk would keep b,c,d,e (the raw cap of 4) and filter to empty.
+    const ids = ["chile", "chile::a", "chile::b", "chile::c", "chile::d", "chile::e", "chile::f", "chile::g"];
+    seedGraph(
+      h,
+      ids.map((id) => ({ id })),
+      ids.filter((id) => id !== "chile").map((id) => [id, "chile", "general"] as [string, string, string]),
+    );
+    h.raw
+      .prepare("INSERT INTO pantry (tenant, name, normalized_name, added_at) VALUES (?, 'Chile G', 'chile::g', ?)")
+      .run(T, TODAY);
+    const pantry = await readPantryNames(h.env, T);
+    const out = await annotateSubstitutes(h.env, ["chile::a"], { pantry, saleItems: [], ctx: emptyIngredientContext(h.env), ...NONE });
+    const siblings = out.get("chile::a")!;
+    expect(siblings.map((s) => s.id)).toEqual(["chile::g"]); // survives despite ranking 6th in the raw walk
+    expect(siblings[0].in_pantry).toBe(true);
+  });
+
+  it("caps the SURVIVORS at SIBLINGS_CAP when more than four are actionable", async () => {
+    const h = sqliteEnv([T]);
+    const ids = ["chile", "chile::a", "chile::b", "chile::c", "chile::d", "chile::e", "chile::f"];
+    seedGraph(
+      h,
+      ids.map((id) => ({ id })),
+      ids.filter((id) => id !== "chile").map((id) => [id, "chile", "general"] as [string, string, string]),
+    );
+    // Every sibling on sale (shared base "chile") → all actionable; the cap still bounds the output.
+    const saleItems: FlyerItem[] = [
+      { sku: "S1", brand: "", description: "Chiles", size: null, price: { regular: 3, promo: 2 }, savings: 1, categories: [], matched_terms: ["chile"] },
+    ];
+    const out = await annotateSubstitutes(h.env, ["chile::a"], { pantry: new Set(), saleItems, ctx: emptyIngredientContext(h.env), ...NONE });
+    expect(out.get("chile::a")!.length).toBe(4); // SIBLINGS_CAP
   });
 
   it("a no-edge line yields an empty array, never omitted", async () => {
     const h = sqliteEnv([T]);
     seedGraph(h, [{ id: "saffron" }], []);
-    const out = await annotateSubstitutes(h.env, ["saffron"], { pantry: new Set(), saleItems: [], ctx: emptyIngredientContext(h.env) });
+    const out = await annotateSubstitutes(h.env, ["saffron"], { pantry: new Set(), saleItems: [], ctx: emptyIngredientContext(h.env), ...NONE });
     expect(out.get("saffron")).toEqual([]);
   });
 
-  it("excludes every OTHER requested key's survivor id — a sibling already in the caller's own batch never suggests itself back", async () => {
+  it("a satellite rollup's label-keyed match (matched_terms empty by contract) still hints via the description substring", async () => {
     const h = sqliteEnv([T]);
     seedGraph(h, CABBAGE_NODES, CABBAGE_EDGES);
+    const saleItems: FlyerItem[] = [
+      { sku: "F1", brand: "", description: "Green Cabbage", size: null, price: { regular: 2, promo: 1.5 }, savings: 0.5, categories: [], matched_terms: [] },
+    ];
     const ctx = emptyIngredientContext(h.env);
-    const out = await annotateSubstitutes(h.env, ["cabbage::type-napa", "cabbage::color-red"], {
-      pantry: new Set(),
-      saleItems: [],
-      ctx,
-    });
-    // color-red is in the SAME requested batch, so napa's walk excludes it.
-    expect(out.get("cabbage::type-napa")!.map((s) => s.id)).toEqual(["cabbage::color-green", "cabbage"]);
+    const out = await annotateSubstitutes(h.env, ["cabbage::type-napa"], { pantry: new Set(), saleItems, ctx, ...NONE });
+    const green = out.get("cabbage::type-napa")!.find((s) => s.id === "cabbage::color-green")!;
+    expect(green.on_sale_hint).toEqual({ sku: "F1", description: "Green Cabbage", price: { regular: 2, promo: 1.5 }, savings: 0.5 });
   });
 
   it("batches ONE readIdentityNeighbors call for the whole key set (no per-line N+1)", async () => {
@@ -428,7 +510,7 @@ describe("annotateSubstitutes — the shared cheap half, batched over the whole 
     (h.env as unknown as { DB: unknown }).DB = wrapped;
     const ctx = emptyIngredientContext(h.env);
     const keys = ["cabbage::type-napa", "cabbage::color-green", "cabbage::color-red"];
-    await annotateSubstitutes(h.env, keys, { pantry: new Set(), saleItems: [], ctx });
+    await annotateSubstitutes(h.env, keys, { pantry: new Set(), saleItems: [], ctx, ...NONE });
     expect(identityQueries).toBe(1); // one batched call, not one per key
   });
 });

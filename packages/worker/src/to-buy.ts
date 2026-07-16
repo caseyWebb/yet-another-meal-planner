@@ -173,13 +173,15 @@ export function dropInFlightNeeds(
  * and keeps its zero-Kroger guarantee absolute. Set, each line gains a `placement`
  * (captured aisle fields from the `sku_cache` row at (key, caller's location) with the
  * legacy `''` fallback, plus a `department` derived from the identity graph's parents)
- * AND `substitutes[]` (the shared annotator's identity-graph siblings, each carrying
- * `in_pantry` + `on_sale_hint` — inline-substitution-hints D1/D3), and the result
- * carries the resolved `location` plus `flyer_as_of` (D8). Cost: at most ONE Kroger
- * Locations resolve (label → locationId, exactly `kroger_flyer`'s posture) and ZERO
- * product searches; no resolvable Kroger location (non-Kroger primary, unresolvable
- * label) means placements carry `department` only, while `substitutes[].in_pantry`
- * (pure D1) and a satellite store's label-keyed `on_sale_hint` are still served.
+ * AND `substitutes[]` (the shared annotator's identity-graph siblings, filtered to
+ * ACTIONABLE ones only — `in_pantry`, `in_cart`, or `on_list` (member possession) or
+ * `on_sale_hint` (independent) — inline-substitution-hints D1/D3, scoped by
+ * scope-substitution-suggestions), and the result carries the resolved `location` plus
+ * `flyer_as_of` (D8). Cost: at most ONE Kroger Locations resolve (label → locationId,
+ * exactly `kroger_flyer`'s posture) and ZERO product searches; no resolvable Kroger
+ * location (non-Kroger primary, unresolvable label) means placements carry `department`
+ * only, while `substitutes[]`'s possession reasons (pure D1) and a satellite store's
+ * label-keyed `on_sale_hint` are still served.
  */
 export async function computeToBuyProjection(
   env: Env,
@@ -336,7 +338,8 @@ function placementRow(cache: CachedMapping[], key: string, locationId: string | 
  * annotator (threaded in, not re-read), one flyer-rollup read, one pantry-names read —
  * zero product searches, no writes. Lines gain `placement` ({} fields optional;
  * null when nothing is known) AND `substitutes` (always an array — empty for a
- * no-edge line), the view gains the resolved `location` (null when none is resolvable)
+ * no-edge line or a line whose every walked neighbor is non-actionable), the view gains
+ * the resolved `location` (null when none is resolvable)
  * and `flyer_as_of` (null when no rollup was used). Each line also gains the reified
  * `display_name` (reify-ingredient-display-names Move C) under ONE unified rule across every
  * line type: an explicit row-level `display_name` override wins; else an id-named line
@@ -398,10 +401,24 @@ async function enrichView(
     readIdentityNeighbors(env, keys),
     readPantryNames(env, tenant),
   ]);
-  // The shared cheap-half annotator (inline-substitution-hints D1/D3): reuses the
-  // identity-graph read above (same `keys` set) instead of a second batched read —
-  // one identity-graph scan for the whole enriched view, not two.
-  const substitutesByKey = await annotateSubstitutes(env, keys, { pantry, saleItems, ctx, neighborsByKey });
+  // Cart/list membership keys (scope-substitution-suggestions): two actionability
+  // reasons built from the ALREADY-LOADED `list` — no new read. Keyed with
+  // `storedGroceryKey` (the same canonical-id space a walked target's `s.id` resolves
+  // to), so a substitute's membership test lines up with the stored rows' ids.
+  const inCartKeys = new Set(list.filter((it) => it.status === "in_cart").map((it) => storedGroceryKey(it, ctx.resolve)));
+  const activeListKeys = new Set(list.filter((it) => it.status === "active").map((it) => storedGroceryKey(it, ctx.resolve)));
+  // The shared cheap-half annotator (inline-substitution-hints D1/D3, actionability-
+  // filtered by scope-substitution-suggestions): reuses the identity-graph read above
+  // (same `keys` set) instead of a second batched read — one identity-graph scan for
+  // the whole enriched view, not two.
+  const substitutesByKey = await annotateSubstitutes(env, keys, {
+    pantry,
+    inCart: inCartKeys,
+    onList: activeListKeys,
+    saleItems,
+    ctx,
+    neighborsByKey,
+  });
 
   const enrichShoppingLine = (line: ToBuyViewLine): ToBuyViewLine => {
     const placement: LinePlacement = {};

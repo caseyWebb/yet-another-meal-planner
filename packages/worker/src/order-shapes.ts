@@ -252,9 +252,13 @@ export interface SubstitutionAlternative extends SubstitutionProduct {
   reasons: SubstitutionReason[];
 }
 
-/** A cross-ingredient sibling from the depth-1 identity-graph walk (D3), relation-labeled.
- *  Shared by the enriched to-buy read's per-line `substitutes[]` (`ToBuyViewLine`,
- *  computed by `annotateSubstitutes` — inline-substitution-hints D1). */
+/** A cross-ingredient sibling from the depth-1 identity-graph walk (D3), relation-labeled,
+ *  and filtered to the ACTIONABLE ones: a suggestion only survives `annotateSubstitutes`
+ *  when at least one of its four reasons is truthy — `in_pantry`, `in_cart`, `on_list`
+ *  (each requiring member possession) or `on_sale_hint` (independent — surfaces even when
+ *  the member does not already have it). Shared by the enriched to-buy read's per-line
+ *  `substitutes[]` (`ToBuyViewLine`, computed by `annotateSubstitutes` —
+ *  inline-substitution-hints D1, scoped to actionable-only by scope-substitution-suggestions). */
 export interface SiblingSuggestion {
   /** The suggestion's canonical ingredient id (representative-resolved, concrete). */
   id: string;
@@ -279,6 +283,12 @@ export interface SiblingSuggestion {
   };
   /** A pantry row exists for this id — already on hand. */
   in_pantry: boolean;
+  /** An `in_cart` grocery row exists for this id — already being bought this order.
+   *  Present exactly when true (mirrors `on_sale_hint`'s style). */
+  in_cart?: boolean;
+  /** An `active` grocery-list line exists for this id — a consolidation nudge (the
+   *  member is already planning to buy it under its own line). Present exactly when true. */
+  on_list?: boolean;
   /** The primary store's flyer rollup carries a matching sale item (default sale floor). */
   on_sale_hint?: { sku: string; description: string; price: { regular: number; promo: number }; savings: number };
 }

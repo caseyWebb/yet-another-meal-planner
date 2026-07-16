@@ -462,6 +462,8 @@ function ShoppingLine({
           label?: string;
           relation?: { role?: string; via?: string; via_label?: string };
           in_pantry?: boolean;
+          in_cart?: boolean;
+          on_list?: boolean;
           on_sale_hint?: { price?: { promo?: number } };
         };
         if (!c.id || !c.label || dismissedSubstitutes.has(c.id)) return null;
@@ -480,7 +482,12 @@ function ShoppingLine({
             key={c.id}
           >
             Try {c.label}? {relation ? <span data-testid="subs-relation">{relation}</span> : null}{" "}
+            {/* The surfacing justification — every returned substitute carries at least
+                one of these four reasons by construction (annotateSubstitutes' actionability
+                filter); a line with none surfaced is filtered server-side and never rendered. */}
             {c.in_pantry ? <span data-testid="subs-pantry-hit">in your pantry</span> : null}{" "}
+            {c.in_cart ? <span data-testid="subs-cart-hit">in your cart</span> : null}{" "}
+            {c.on_list ? <span data-testid="subs-list-hit">already on your list</span> : null}{" "}
             {typeof c.on_sale_hint?.price?.promo === "number" ? (
               <span data-testid="subs-sale-hint">${c.on_sale_hint.price.promo.toFixed(2)} at your store</span>
             ) : null}{" "}
