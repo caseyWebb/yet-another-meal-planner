@@ -51,7 +51,7 @@
     "@playwright/test": "^1.61.1",
     "@types/js-yaml": "^4.0.9",
     "json5": "^2.2.3",
-    "typescript": "^6.0.3",
+    "typescript": "^7.0.2",
     "vitest": "^4.1.9",
     "wrangler": "^4.103.0"
   }
