@@ -47,7 +47,7 @@
     "zod": "^4.0.0"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20260621.1",
+    "@cloudflare/workers-types": "^5.20260713.1",
     "@playwright/test": "^1.61.1",
     "@types/js-yaml": "^4.0.9",
     "json5": "^2.2.3",
