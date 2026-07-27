@@ -67,13 +67,13 @@ jobs:
       # target of the KV-id pin-back commit, and the marketplace bundle the publish
       # step commits. fetch-depth: 0 (full history) so the plugin version derives from
       # `git rev-list --count HEAD` of the data repo — a shallow clone would return 1.
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
       # This code repo — the Worker source + build deps. Into _code/ so nothing is
       # ever committed back to the data repo (except the pinned ids, below).
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: caseyWebb/yet-another-meal-planner
           ref: ${{ inputs.code_ref }}
