@@ -34,7 +34,7 @@
     "@modelcontextprotocol/ext-apps": "^1.7.4",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@simplewebauthn/server": "^13.3.2",
-    "agents": "^0.17.1",
+    "agents": "^0.19.0",
     "fast-xml-parser": "^5.9.3",
     "gray-matter": "^4.0.3",
     "hono": "^4.12.27",
