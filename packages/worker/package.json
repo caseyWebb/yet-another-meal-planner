@@ -29,7 +29,7 @@
     "test:app": "playwright test -c playwright.app.config.ts"
   },
   "dependencies": {
-    "@cloudflare/workers-oauth-provider": "^0.8.1",
+    "@cloudflare/workers-oauth-provider": "^0.10.2",
     "@yamp/contract": "workspace:*",
     "@modelcontextprotocol/ext-apps": "^1.7.4",
     "@modelcontextprotocol/sdk": "^1.29.0",
@@ -47,7 +47,7 @@
     "zod": "^4.0.0"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20260621.1",
+    "@cloudflare/workers-types": "^5.20260810.1",
     "@playwright/test": "^1.61.1",
     "@types/js-yaml": "^4.0.9",
     "json5": "^2.2.3",
