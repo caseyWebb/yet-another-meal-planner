@@ -12,6 +12,16 @@ import type { Env } from "./env.js";
 
 const TENANT_PREFIX = "tenant:"; // mirrors src/tenant.ts (the allowlist directory)
 
+// The one-time convergence marker for the tenant-registry backfill. The backfill seeds the D1
+// `tenants` registry from the KV allowlist, and every tenant-creation path
+// (`onboard`/`finalizeNewTenant`/`redeemGroupCode`) now writes the registry DIRECTLY — so the
+// backfill only ever needs to run once to catch allowlist rows that predate that change. A
+// persistent marker lets every subsequent cron tick short-circuit on a single `get` instead of
+// a full `kv.list()` — a `list` costs a KV "list operation" (free tier caps 1,000/day), and
+// this job runs on every 5-minute cron tick (~288/day), so the unconditional list was burning
+// the daily list budget for zero registry writes.
+const BACKFILL_MARKER_KEY = "registry:backfilled";
+
 export type SignupOutcome =
   | { kind: "ok"; tenant: string }
   | { kind: "username_taken" }
@@ -95,12 +105,19 @@ export async function finalizeNewTenant(env: Env, id: string, now: number): Prom
  * NOTHING); converges existing members with no operator action. Wired into the scheduled
  * reconcile. Correctness of collision-prevention does not depend on this having run — the KV
  * allowlist pre-check in redeemGroupCode already catches a collision with an existing member.
+ *
+ * The backfill runs ONCE (a `registry:backfilled` marker short-circuits every later call):
+ * tenant-creation paths write the registry directly, so re-listing the allowlist every cron
+ * tick spends the KV daily list-operation budget with no effect. The marker is written last
+ * so a partial first pass retries to completion on the next tick.
  */
 export async function backfillTenantRegistry(
   env: Env,
   now: number = Date.now(),
 ): Promise<{ registered: number }> {
+  if (await env.TENANT_KV.get(BACKFILL_MARKER_KEY)) return { registered: 0 };
   const ids = await directoryFromEnv(env).list();
   for (const id of ids) await registerExistingTenant(env, id, now);
+  await env.TENANT_KV.put(BACKFILL_MARKER_KEY, String(now));
   return { registered: ids.length };
 }
