@@ -18,7 +18,7 @@
   "dependencies": {
     "@yamp/contract": "workspace:*",
     "@yamp/ui": "workspace:*",
-    "@modelcontextprotocol/ext-apps": "^1.7.4",
+    "@modelcontextprotocol/ext-apps": "^2.0.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7"
   },
