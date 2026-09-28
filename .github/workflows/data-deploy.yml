@@ -117,7 +117,7 @@ jobs:
       # `bucket_name`, scoped to THIS operator's Cloudflare account). The robust pin-back +
       # second-deploy idempotency guard is operator-provisioning's concern.
       - name: Ensure R2 corpus bucket exists
-        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
+        uses: cloudflare/wrangler-action@953926a2e2182532811c01a25e53647d93bf07c0 # v4.1.3
         continue-on-error: true
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -163,7 +163,7 @@ jobs:
       # member app's Connect-to-Claude modal templates the real slug with zero operator
       # setup (whoami serves it; see src/deployment.ts).
       - name: Deploy
-        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
+        uses: cloudflare/wrangler-action@953926a2e2182532811c01a25e53647d93bf07c0 # v4.1.3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           workingDirectory: _code/packages/worker
@@ -274,7 +274,7 @@ jobs:
       # exist). A no-op when nothing is pending. The operator's CLOUDFLARE_API_TOKEN must
       # carry D1 edit — an under-scoped token surfaces as a clear failure here.
       - name: Apply D1 schema migrations
-        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
+        uses: cloudflare/wrangler-action@953926a2e2182532811c01a25e53647d93bf07c0 # v4.1.3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           workingDirectory: _code/packages/worker
